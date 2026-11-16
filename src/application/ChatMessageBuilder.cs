@@ -99,7 +99,7 @@ public sealed class ChatMessageBuilder :
         {
             if (builder.CanAddMessage(message))
             {
-                builder.AddMessage(message, 1);
+                builder.AddMessage(message);
                 continue;
             }
             if (builder.ContainsHistory)
@@ -109,7 +109,7 @@ public sealed class ChatMessageBuilder :
             }
             if (builder.CanAddMessage(message))
             {
-                builder.AddMessage(message, 1);
+                builder.AddMessage(message);
                 continue;
             }
 

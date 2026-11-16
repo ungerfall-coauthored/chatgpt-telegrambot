@@ -4,6 +4,7 @@ using OpenAI.ObjectModels;
 using OpenAI.ObjectModels.RequestModels;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,6 +16,7 @@ namespace Ungerfall.ChatGpt.TelegramBot.TimedTasks;
 public class DailySummary : TimedTask
 {
     public const string CRON_EXPRESSION = "0 55 23 * * *";
+    private const int MaxConcurrentRequests = 4;
 
     // TODO: move to config/db
     private const string Prompt = """
@@ -55,9 +57,10 @@ public class DailySummary : TimedTask
     protected override async Task ExecuteForChat(long chatId)
     {
         var gptTasks = new List<Task<string>>();
+        using var concurrencyLimit = new SemaphoreSlim(MaxConcurrentRequests);
         await foreach (var r in CreateGptRequestBatches(chatId, cancellation: default))
         {
-            gptTasks.Add(SendGptRequest(r, chatId, cancellation: default));
+            gptTasks.Add(SendGptRequestWithLimit(r, chatId, concurrencyLimit, cancellation: default));
         }
 
         var summaries = await Task.WhenAll(gptTasks);
@@ -78,9 +81,44 @@ public class DailySummary : TimedTask
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var systemRole = _whitelist.GetSystemRoleMessage(chatId);
         await foreach (var batch in ChatMessageBuilder.CreateBatches(
-            _messages.Get(chatId, today, cancellation), systemRole, Prompt, cancellation: cancellation))
+            GetOrderedHistory(chatId, today, cancellation), systemRole, Prompt, cancellation: cancellation))
         {
             yield return new ChatCompletionCreateRequest { Messages = batch, Temperature = Temperature, Model = _model };
+        }
+    }
+
+    private async IAsyncEnumerable<Database.TelegramMessage> GetOrderedHistory(
+        long chatId,
+        DateOnly today,
+        [EnumeratorCancellation] CancellationToken cancellation)
+    {
+        var messages = new List<Database.TelegramMessage>();
+        await foreach (var message in _messages.Get(chatId, today, cancellation))
+        {
+            messages.Add(message);
+        }
+
+        foreach (var message in messages.OrderBy(x => x.Date).ThenBy(x => x.MessageId).ThenBy(x => x.Id, StringComparer.Ordinal))
+        {
+            cancellation.ThrowIfCancellationRequested();
+            yield return message;
+        }
+    }
+
+    private async Task<string> SendGptRequestWithLimit(
+        ChatCompletionCreateRequest request,
+        long chatId,
+        SemaphoreSlim concurrencyLimit,
+        CancellationToken cancellation)
+    {
+        await concurrencyLimit.WaitAsync(cancellation);
+        try
+        {
+            return await SendGptRequest(request, chatId, cancellation);
+        }
+        finally
+        {
+            concurrencyLimit.Release();
         }
     }
 
