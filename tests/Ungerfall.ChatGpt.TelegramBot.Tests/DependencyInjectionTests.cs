@@ -8,8 +8,9 @@ public class DependencyInjectionTest
     public DependencyInjectionTest()
     {
         Environment.SetEnvironmentVariable("TELEGRAM_BOT_TOKEN", "123456789:unit-test-token", EnvironmentVariableTarget.Process);
-        Environment.SetEnvironmentVariable("OPENAI_API_KEY", Guid.NewGuid().ToString(), EnvironmentVariableTarget.Process);
-        Environment.SetEnvironmentVariable("OPENAI_ORG", Guid.NewGuid().ToString(), EnvironmentVariableTarget.Process);
+        Environment.SetEnvironmentVariable("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/", EnvironmentVariableTarget.Process);
+        Environment.SetEnvironmentVariable("AZURE_OPENAI_API_KEY", Guid.NewGuid().ToString(), EnvironmentVariableTarget.Process);
+        Environment.SetEnvironmentVariable("AZURE_OPENAI_CHAT_DEPLOYMENT", "test-chat", EnvironmentVariableTarget.Process);
         Environment.SetEnvironmentVariable("CosmosDatabase", Guid.NewGuid().ToString(), EnvironmentVariableTarget.Process);
         Environment.SetEnvironmentVariable("CosmosTelegramMessagesContainer", Guid.NewGuid().ToString(), EnvironmentVariableTarget.Process);
         Environment.SetEnvironmentVariable("CosmosTimedTasksContainer", Guid.NewGuid().ToString(), EnvironmentVariableTarget.Process);

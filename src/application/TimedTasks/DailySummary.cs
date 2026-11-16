@@ -1,6 +1,5 @@
 ﻿using Microsoft.Extensions.Logging;
 using OpenAI.Interfaces;
-using OpenAI.ObjectModels;
 using OpenAI.ObjectModels.RequestModels;
 using System;
 using System.Collections.Generic;
@@ -29,7 +28,7 @@ public class DailySummary : TimedTask
     private readonly ITelegramMessageRepository _messages;
     private readonly IOpenAIService _openAiService;
     private readonly ILogger<DailySummary> _logger;
-    private readonly string _model = Models.Gpt_4o;
+    private readonly string _model;
 
     public DailySummary(
         DailySummaryChats chats,
@@ -38,12 +37,13 @@ public class DailySummary : TimedTask
         ILogger<DailySummary> logger,
         IWhitelist whitelist,
         ITelegramMessageRepository messages,
-        IOpenAIService openAiService) : base(repo, botClient, logger)
+        SummaryOpenAiClient openAiClient) : base(repo, botClient, logger)
     {
         _chats = chats;
         _whitelist = whitelist;
         _messages = messages;
-        _openAiService = openAiService;
+        _openAiService = openAiClient.Service;
+        _model = openAiClient.Deployment;
         _logger = logger;
     }
 
@@ -87,7 +87,7 @@ public class DailySummary : TimedTask
     private async Task<string> SendGptRequest(ChatCompletionCreateRequest request, long chatId, CancellationToken cancellation = default)
     {
         var completionResult = await _openAiService.ChatCompletion
-            .Create(request, Models.Model.Gpt_4o, cancellationToken: cancellation);
+            .CreateCompletion(request, _model, cancellationToken: cancellation);
         _logger.LogInformation("Daily summary tokens for chat {ChatId}: {@tokens}", chatId,
             new { completionResult.Usage?.PromptTokens, completionResult.Usage?.CompletionTokens, completionResult.Usage?.TotalTokens });
         return completionResult.Successful

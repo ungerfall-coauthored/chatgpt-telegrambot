@@ -3,8 +3,6 @@ using Microsoft.Extensions.Azure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
-using OpenAI.Extensions;
-using OpenAI.ObjectModels;
 using System;
 using Telegram.Bot;
 using Ungerfall.ChatGpt.TelegramBot;
@@ -23,8 +21,6 @@ IHost host = Host.CreateDefaultBuilder(args)
         services.Configure<Configuration>(opt =>
         {
             opt.TelegramBotToken = context.Configuration["TELEGRAM_BOT_TOKEN"] ?? throw new ArgumentNullException(nameof(context));
-            opt.OpenAiApiKey = context.Configuration["OPENAI_API_KEY"] ?? throw new ArgumentNullException(nameof(context));
-            opt.OpenAiOrg = context.Configuration["OPENAI_ORG"] ?? throw new ArgumentNullException(nameof(context));
         });
         services.Configure<CosmosDbOptions>(opt =>
         {
@@ -42,12 +38,7 @@ IHost host = Host.CreateDefaultBuilder(args)
                     return new TelegramBotClient(options, httpClient);
                 });
 
-        services.AddOpenAIService(setup =>
-        {
-            setup.ApiKey = context.Configuration["OPENAI_API_KEY"] ?? throw new ArgumentNullException(nameof(context));
-            setup.Organization = context.Configuration["OPENAI_ORG"] ?? throw new ArgumentNullException(nameof(context));
-            setup.DefaultModelId = Models.Gpt_4o_mini;
-        });
+        services.AddAzureOpenAi();
         services.AddAzureClients(c => c.AddServiceBusClient(context.Configuration["ServiceBusConnection"]));
         services.AddSingleton(sp =>
         {

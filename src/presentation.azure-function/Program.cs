@@ -3,8 +3,6 @@ using Microsoft.Extensions.Azure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
-using OpenAI.Extensions;
-using OpenAI.ObjectModels;
 using System;
 using Telegram.Bot;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
@@ -27,10 +25,6 @@ namespace Ungerfall.ChatGpt.TelegramBot.AzureFunction
         {
             var tgToken = Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN", EnvironmentVariableTarget.Process)
                 ?? throw new ArgumentException("TELEGRAM_BOT_TOKEN is missing");
-            var openAiApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY", EnvironmentVariableTarget.Process)
-                ?? throw new ArgumentException("OPENAI_API_KEY is missing");
-            var openAiOrg = Environment.GetEnvironmentVariable("OPENAI_ORG", EnvironmentVariableTarget.Process)
-                ?? throw new ArgumentException("OPENAI_ORG is missing");
 
             return new HostBuilder()
                .ConfigureFunctionsWorkerDefaults()
@@ -39,12 +33,7 @@ namespace Ungerfall.ChatGpt.TelegramBot.AzureFunction
                    s.Configure<System.Text.Json.JsonSerializerOptions>(JsonBotAPI.Configure);
                    s.AddHttpClient("tgclient")
                        .AddTypedClient<ITelegramBotClient>(httpClient => new TelegramBotClient(tgToken, httpClient));
-                   s.AddOpenAIService(setup =>
-                   {
-                       setup.ApiKey = openAiApiKey;
-                       setup.Organization = openAiOrg;
-                       setup.DefaultModelId = Models.Gpt_4o_mini;
-                   });
+                   s.AddAzureOpenAi();
                    s.Configure<CosmosDbOptions>(opt =>
                    {
                        opt.DatabaseId = Environment.GetEnvironmentVariable(

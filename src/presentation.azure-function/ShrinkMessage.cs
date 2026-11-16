@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
 using Ungerfall.ChatGpt.TelegramBot.Database;
+using Ungerfall.ChatGpt.TelegramBot.Configuration;
 
 namespace Ungerfall.ChatGpt.TelegramBot.AzureFunction;
 
@@ -20,17 +21,20 @@ public class ShrinkMessage
     private readonly IOpenAIService _openAiService;
     private readonly ITelegramMessageRepository _messagesRepository;
     private readonly ITokenCounter _tokenCounter;
+    private readonly AzureOpenAiSettings _azureOpenAi;
 
     public ShrinkMessage(
         IOpenAIService openAiService,
         ITokenCounter tokenCounter,
         ILogger<ShrinkMessage> logger,
-        ITelegramMessageRepository messagesRepository)
+        ITelegramMessageRepository messagesRepository,
+        AzureOpenAiSettings azureOpenAi)
     {
         _openAiService = openAiService;
         _tokenCounter = tokenCounter;
         _logger = logger;
         _messagesRepository = messagesRepository;
+        _azureOpenAi = azureOpenAi;
     }
 
     [Function("ShrinkMessage")]
@@ -91,7 +95,7 @@ public class ShrinkMessage
 
     private async Task<string> AskChatGptToShrink(TelegramMessage msg)
     {
-        var completionResult = await _openAiService.ChatCompletion.Create(
+        var completionResult = await _openAiService.ChatCompletion.CreateCompletion(
             new ChatCompletionCreateRequest
             {
                 Messages =
@@ -106,9 +110,9 @@ public class ShrinkMessage
                 ],
                 Temperature = 0f,
                 User = msg.User,
-                Model = Models.Gpt_4o_mini,
+                Model = _azureOpenAi.ChatDeployment,
             },
-            Models.Model.Gpt_4o_mini);
+            _azureOpenAi.ChatDeployment);
         _logger.LogInformation("Shrink tokens for chat {ChatId}: {@tokens}", msg.ChatId,
             new { completionResult.Usage?.PromptTokens, completionResult.Usage?.CompletionTokens, completionResult.Usage?.TotalTokens });
         var content = completionResult.Choices?.Count > 0 ? completionResult.Choices[0].Message?.Content : null;

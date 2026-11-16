@@ -1,6 +1,6 @@
 # Ungerfall ChatGPT
 
-Telegram bot that uses OpenAI's ChatGPT that uses brief and concise system role.
+Telegram bot using Azure OpenAI for chat and optional image generation.
 The bot can be run as a polling background service or as an Azure Function using Telegram bot webhooks.
 It stores conversation history in Cosmos DB.
 
@@ -15,6 +15,12 @@ It stores conversation history in Cosmos DB.
   
 ## Sequence diagram
 ![plantuml](docs/sequence-diagram.svg)
+
+## Fork setup
+
+See [Azure setup, live tests and fork deployment](docs/azure-setup.md).
+The fork's CI runs offline tests; deployment is manual, restricted to the fork's
+`master` branch, and requires a separately configured Azure test environment.
 
 ## Contributing
 

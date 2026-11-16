@@ -55,7 +55,7 @@ public class ShrinkMessageTest
             openAiServiceMock,
             tokenCounterMock,
             loggerMock,
-            messageRepoMock);
+            messageRepoMock, TestAzureSettings.Create());
 
         // Act
         await function.Run(new TimerInfo { ScheduleStatus = default, IsPastDue = default });
@@ -103,7 +103,7 @@ public class ShrinkMessageTest
             openAiServiceMock,
             tokenCounterMock,
             loggerMock,
-            messageRepoMock);
+            messageRepoMock, TestAzureSettings.Create());
 
         // Act & Assert
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -153,7 +153,7 @@ public class ShrinkMessageTest
             openAiServiceMock,
             tokenCounterMock,
             loggerMock,
-            messageRepoMock);
+            messageRepoMock, TestAzureSettings.Create());
 
         // Act
         await function.Run(new TimerInfo { ScheduleStatus = default, IsPastDue = default });
