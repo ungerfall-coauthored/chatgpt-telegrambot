@@ -22,6 +22,7 @@ namespace Ungerfall.ChatGpt.TelegramBot.Commands;
 public class TooLongDidNotReadToday
 {
     private const string AskForTLDR = "Напиши TL;DR переписки маркированным списком.";
+    private const int MaxConcurrentRequests = 4;
     private readonly ITelegramMessageRepository _history;
     private readonly ITokenCounter _tokenCounter;
     private readonly ITelegramBotClient _botClient;
@@ -89,7 +90,19 @@ public class TooLongDidNotReadToday
             {
                 try
                 {
-                    var summaries = await Task.WhenAll(requests.Select(r => SendGptRequest(r, chatId, cancellation)));
+                    using var concurrencyLimit = new SemaphoreSlim(MaxConcurrentRequests);
+                    var summaries = await Task.WhenAll(requests.Select(async request =>
+                    {
+                        await concurrencyLimit.WaitAsync(cancellation);
+                        try
+                        {
+                            return await SendGptRequest(request, chatId, cancellation);
+                        }
+                        finally
+                        {
+                            concurrencyLimit.Release();
+                        }
+                    }));
                     summary = string.Join(NewLine, summaries.Select(x => x.Text));
                     if (summaries.All(x => x.Successful))
                     {
@@ -136,7 +149,7 @@ public class TooLongDidNotReadToday
         var messages = new List<Database.TelegramMessage>();
         await foreach (var message in _history.Get(chatId, today, cancellation))
             if ((message.MessageThreadId ?? 0) == (messageThreadId ?? 0)) messages.Add(message);
-        foreach (var message in messages.OrderByDescending(x => x.Date).ThenByDescending(x => x.MessageId).ThenBy(x => x.Id, StringComparer.Ordinal))
+        foreach (var message in messages.OrderBy(x => x.Date).ThenBy(x => x.MessageId).ThenBy(x => x.Id, StringComparer.Ordinal))
         {
             fingerprint.AppendData(JsonSerializer.SerializeToUtf8Bytes(new
             {

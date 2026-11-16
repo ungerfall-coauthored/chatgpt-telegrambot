@@ -31,6 +31,9 @@ public class DailySummaryTest
         var requests = new List<ChatCompletionCreateRequest>();
         var messages = Enumerable.Range(1, 3).Select(i => new TelegramMessage
         {
+            Id = $"message:{i}",
+            MessageId = i,
+            Date = DateTime.UtcNow.AddMinutes(i),
             User = "User",
             Message = $"{i}: {string.Join(' ', Enumerable.Repeat("word", 2000))}",
         }).ToList();
@@ -38,7 +41,7 @@ public class DailySummaryTest
         chatsMock.Get().Returns(ImmutableHashSet.Create(chatId));
         whitelistMock.GetSystemRoleMessage(chatId).Returns("System role");
         messageRepoMock.Get(chatId, Arg.Any<DateOnly>(), Arg.Any<CancellationToken>())
-            .Returns(messages.ToAsyncEnumerable());
+            .Returns(messages.OrderByDescending(x => x.Date).ToAsyncEnumerable());
         openAiServiceMock.ChatCompletion.CreateCompletion(
                 Arg.Do<ChatCompletionCreateRequest>(requests.Add),
                 Arg.Any<string>(),
@@ -57,6 +60,9 @@ public class DailySummaryTest
 
         // Assert
         Assert.Equal(messages.Count, requests.Count);
+        Assert.Equal(
+            messages.OrderBy(x => x.Date).Select(x => $"{x.User}: {x.Message}"),
+            requests.Select(request => request.Messages[1].Content));
         Assert.All(requests, request =>
         {
             Assert.Equal("System role", request.Messages.First().Content);
