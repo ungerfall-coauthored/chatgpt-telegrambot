@@ -1,0 +1,57 @@
+name: Build, test and deploy
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Restore locked dependencies
+        run: dotnet restore src/Ungerfall.ChatGpt.TelegramBot.sln --locked-mode
+      - name: Build solution
+        run: dotnet build src/Ungerfall.ChatGpt.TelegramBot.sln --configuration Release --no-restore
+      - name: Run offline tests
+        run: dotnet test tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj --configuration Release --no-build --no-restore --filter 'Category!=Integration'
+      - name: Publish Azure Function
+        run: dotnet publish src/presentation.azure-function/azure-function.csproj --configuration Release --no-restore --output "${{ runner.temp }}/function"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: azure-function
+          path: ${{ runner.temp }}/function
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'ungerfall-coauthored/chatgpt-telegrambot' && github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: fork-test
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: azure-function
+          path: ${{ runner.temp }}/function
+      - name: Log in to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy fork Function App
+        uses: Azure/functions-action@c5060b3b8bb1ebbcb531abd00c822ecbaa8ea656 # v1.5.7
+        with:
+          app-name: ${{ vars.AZURE_FUNCTIONAPP_NAME }}
+          package: ${{ runner.temp }}/function

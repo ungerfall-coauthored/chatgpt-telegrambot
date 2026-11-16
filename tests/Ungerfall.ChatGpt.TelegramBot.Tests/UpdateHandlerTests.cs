@@ -49,13 +49,14 @@ public class UpdateHandlerTest
         var handler = new UpdateHandler(
             botClientMock, loggerMock, openAiServiceMock, messageRepoMock, tokenCounterMock,
             new TooLongDidNotReadToday(messageRepoMock, tokenCounterMock, openAiServiceMock,
-                Substitute.For<ILogger<TooLongDidNotReadToday>>(), botClientMock, whitelistMock, Substitute.For<ITimedTaskExecutionRepository>()),
+                Substitute.For<ILogger<TooLongDidNotReadToday>>(), botClientMock, whitelistMock, Substitute.For<ITimedTaskExecutionRepository>(), TestAzureSettings.Create()),
             whitelistMock,
-            new GenerateImage(openAiServiceMock, Substitute.For<ILogger<GenerateImage>>(), botClientMock),
+            new GenerateImage(new ImageOpenAiClient(openAiServiceMock), Substitute.For<ILogger<GenerateImage>>(), botClientMock),
             new TestUsers(), conversationRepoMock,
             new ConversationPolicy(conversationRepoMock, new ConversationPolicyChats(), Substitute.For<ILogger<ConversationPolicy>>(),
                 new DecisionsClient(new HttpClient(), Substitute.For<ILogger<DecisionsClient>>())),
-            new PersonalSettings(botClientMock, Substitute.For<ILogger<PersonalSettings>>()));
+            new PersonalSettings(botClientMock, Substitute.For<ILogger<PersonalSettings>>(), TestAzureSettings.Create()),
+            TestAzureSettings.Create());
 
         // Act
         var handling = handler.Handle(update, default);
@@ -124,13 +125,14 @@ public class UpdateHandlerTest
         var handler = new UpdateHandler(
             botClientMock, loggerMock, openAiServiceMock, messageRepoMock, tokenCounterMock,
             new TooLongDidNotReadToday(messageRepoMock, tokenCounterMock, openAiServiceMock,
-                Substitute.For<ILogger<TooLongDidNotReadToday>>(), botClientMock, whitelistMock, Substitute.For<ITimedTaskExecutionRepository>()),
+                Substitute.For<ILogger<TooLongDidNotReadToday>>(), botClientMock, whitelistMock, Substitute.For<ITimedTaskExecutionRepository>(), TestAzureSettings.Create()),
             whitelistMock,
-            new GenerateImage(openAiServiceMock, Substitute.For<ILogger<GenerateImage>>(), botClientMock),
+            new GenerateImage(new ImageOpenAiClient(openAiServiceMock), Substitute.For<ILogger<GenerateImage>>(), botClientMock),
             new TestUsers(), conversationRepoMock,
             new ConversationPolicy(conversationRepoMock, new ConversationPolicyChats(), Substitute.For<ILogger<ConversationPolicy>>(),
                 new DecisionsClient(new HttpClient(), Substitute.For<ILogger<DecisionsClient>>())),
-            new PersonalSettings(botClientMock, Substitute.For<ILogger<PersonalSettings>>()));
+            new PersonalSettings(botClientMock, Substitute.For<ILogger<PersonalSettings>>(), TestAzureSettings.Create()),
+            TestAzureSettings.Create());
 
         // Act
         await handler.Handle(update, default);

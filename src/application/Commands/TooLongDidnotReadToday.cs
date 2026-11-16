@@ -15,6 +15,7 @@ using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
+using Ungerfall.ChatGpt.TelegramBot.Configuration;
 using static System.Environment;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Commands;
@@ -29,6 +30,7 @@ public class TooLongDidNotReadToday
     private readonly ILogger<TooLongDidNotReadToday> _logger;
     private readonly IWhitelist _whitelist;
     private readonly ITimedTaskExecutionRepository _cache;
+    private readonly AzureOpenAiSettings _azureOpenAi;
 
     public TooLongDidNotReadToday(
         ITelegramMessageRepository history,
@@ -37,7 +39,8 @@ public class TooLongDidNotReadToday
         ILogger<TooLongDidNotReadToday> logger,
         ITelegramBotClient botClient,
         IWhitelist whitelist,
-        ITimedTaskExecutionRepository cache)
+        ITimedTaskExecutionRepository cache,
+        AzureOpenAiSettings azureOpenAi)
     {
         _history = history;
         _tokenCounter = tokenCounter;
@@ -46,6 +49,7 @@ public class TooLongDidNotReadToday
         _botClient = botClient;
         _whitelist = whitelist;
         _cache = cache;
+        _azureOpenAi = azureOpenAi;
     }
 
     public async Task<Message> Execute(
@@ -65,7 +69,7 @@ public class TooLongDidNotReadToday
         await foreach (var batch in ChatMessageBuilder.CreateBatches(
             GetHistory(chatId, today, messageThreadId, historyHash, cancellation), _whitelist.GetSystemRoleMessage(chatId), AskForTLDR, _tokenCounter, cancellation))
         {
-            requests.Add(new ChatCompletionCreateRequest { Messages = batch, Temperature = .2f, Model = Models.Gpt_4o_mini });
+            requests.Add(new ChatCompletionCreateRequest { Messages = batch, Temperature = .2f, Model = _azureOpenAi.ChatDeployment });
         }
 
         string? summary = null;
@@ -74,7 +78,8 @@ public class TooLongDidNotReadToday
             // Hash the exact prepared messages, including role, instruction and batch boundaries.
             var hash = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
             {
-                version = 1, chatId, day = today, topic = messageThreadId ?? 0,
+                version = 2, chatId, day = today, topic = messageThreadId ?? 0,
+                endpoint = _azureOpenAi.Endpoint, apiVersion = _azureOpenAi.ApiVersion,
                 history = Convert.ToHexString(historyHash.GetHashAndReset()),
                 requests = requests.Select(r => new { r.Model, r.Temperature, messages = r.Messages.Select(m => new { m.Role, m.Content }) }),
             })));
@@ -156,9 +161,9 @@ public class TooLongDidNotReadToday
 
     private async Task<(string Text, bool Successful)> SendGptRequest(ChatCompletionCreateRequest request, long chatId, CancellationToken cancellation = default)
     {
-        var completionResult = await _openAiService.ChatCompletion.Create(
+        var completionResult = await _openAiService.ChatCompletion.CreateCompletion(
             request,
-            Models.Model.Gpt_4o_mini,
+            request.Model,
             cancellationToken: cancellation);
         _logger.LogInformation("TLDR tokens for chat {ChatId}: {@tokens}", chatId,
             new

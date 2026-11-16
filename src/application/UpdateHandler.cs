@@ -19,7 +19,7 @@ namespace Ungerfall.ChatGpt.TelegramBot;
 
 public class UpdateHandler
 {
-    private const string BotUsername = "@chatgpt_ungerfall_bot";
+    private readonly string BotUsername = "@" + (Environment.GetEnvironmentVariable("TELEGRAM_BOT_USERNAME") ?? "chatgpt_ungerfall_bot").TrimStart('@');
 
     private readonly ITelegramBotClient _botClient;
     private readonly ILogger<UpdateHandler> _logger;
@@ -33,6 +33,7 @@ public class UpdateHandler
     private readonly TestUsers _testUsers;
     private readonly IConversationRepository _conversations;
     private readonly ConversationPolicy _conversationPolicy;
+    private readonly AzureOpenAiSettings _azureOpenAi;
 
     public UpdateHandler(
         ITelegramBotClient botClient,
@@ -46,7 +47,8 @@ public class UpdateHandler
         TestUsers testUsers,
         IConversationRepository conversations,
         ConversationPolicy conversationPolicy,
-        PersonalSettings personalSettingsCommand)
+        PersonalSettings personalSettingsCommand,
+        AzureOpenAiSettings azureOpenAi)
     {
         _botClient = botClient;
         _logger = logger;
@@ -60,6 +62,7 @@ public class UpdateHandler
         _conversations = conversations;
         _conversationPolicy = conversationPolicy;
         _personalSettingsCommand = personalSettingsCommand;
+        _azureOpenAi = azureOpenAi;
     }
 
     public async Task Handle(Update update, CancellationToken cancellation)
@@ -324,16 +327,16 @@ public class UpdateHandler
             var history = new ConversationHistory(_telegramMessagesRepository, $"{user}: {message}", _tokenCounter, _whitelist, messageThreadId);
             (gptMessage, tokensCount) = await history.GetForChatGpt(chatId, cancellation);
         }
-        var completionResult = await _openAiService.ChatCompletion.Create(
+        var completionResult = await _openAiService.ChatCompletion.CreateCompletion(
             new ChatCompletionCreateRequest
             {
                 Messages = gptMessage,
                 Temperature = 0f,
                 User = user,
                 MaxCompletionTokens = autonomous ? 120 : null,
-                Model = Models.Gpt_4o_mini
+                Model = _azureOpenAi.ChatDeployment
             },
-            Models.Model.Gpt_4o_mini,
+            _azureOpenAi.ChatDeployment,
             cancellationToken: cancellation);
         _logger.LogInformation("Tokens: {@tokens}",
             new

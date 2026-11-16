@@ -1,7 +1,10 @@
-$additionalParams = $args -join ' '
-$dotnet = "8.0"
-$command = "func azure functionapp publish fapp-ungerfall-chatgpt-telegram-webhook --show-keys --dotnet-version $dotnet $additionalParams"
+param([Parameter(Mandatory = $true)][string]$FunctionAppName)
 
-cd .\src\presentation.azure-function\
-Invoke-Expression $command
-cd ../..
+Push-Location (Join-Path $PSScriptRoot '../src/presentation.azure-function')
+try {
+    func azure functionapp publish $FunctionAppName --dotnet-version 8.0
+    if ($LASTEXITCODE -ne 0) { throw "Function publish failed with exit code $LASTEXITCODE" }
+}
+finally {
+    Pop-Location
+}

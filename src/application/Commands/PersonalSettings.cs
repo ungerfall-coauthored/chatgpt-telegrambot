@@ -9,6 +9,7 @@ using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
+using Ungerfall.ChatGpt.TelegramBot.Configuration;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Commands;
 public class PersonalSettings
@@ -16,11 +17,13 @@ public class PersonalSettings
     private const string OpenPrivateChat = "Откройте личный чат с ботом и отправьте /settings.";
     private readonly ITelegramBotClient _botClient;
     private readonly ILogger<PersonalSettings> _logger;
+    private readonly AzureOpenAiSettings _azureOpenAi;
 
-    public PersonalSettings(ITelegramBotClient botClient, ILogger<PersonalSettings> logger)
+    public PersonalSettings(ITelegramBotClient botClient, ILogger<PersonalSettings> logger, AzureOpenAiSettings azureOpenAi)
     {
         _botClient = botClient;
         _logger = logger;
+        _azureOpenAi = azureOpenAi;
     }
 
     public async Task Execute(Message message, CancellationToken cancellation, Func<Task>? beforeSend = default)
@@ -130,10 +133,10 @@ public class PersonalSettings
         }
     }
 
-    private static string? GetText(string page) => page switch
+    private string? GetText(string page) => page switch
     {
         "open" => "Личная справка\nПерсональные настройки роли, модели и квоты пока не поддерживаются. Это меню ничего не меняет.",
-        "model" => $"Модель обычных ответов: {Models.Gpt_4o_mini}.\nРоль задаётся для всего чата. Выбрать личную модель или роль пока нельзя.",
+        "model" => $"Развёртывание обычных ответов: {_azureOpenAi.ChatDeployment}.\nРоль задаётся для всего чата. Выбрать личную модель или роль пока нельзя.",
         "quota" => "Персональная квота в боте не реализована. Строка tokens показывает расход конкретного ответа, а не ваш остаток.",
         _ => null,
     };

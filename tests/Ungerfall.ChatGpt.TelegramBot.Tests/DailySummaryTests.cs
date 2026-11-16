@@ -53,7 +53,7 @@ public class DailySummaryTest
 
         var task = new DailySummary(
             chatsMock, botClientMock, executionRepoMock, loggerMock,
-            whitelistMock, messageRepoMock, openAiServiceMock);
+            whitelistMock, messageRepoMock, new SummaryOpenAiClient(openAiServiceMock, "summary"));
 
         // Act
         await task.Execute();
@@ -113,7 +113,7 @@ public class DailySummaryTest
 
         var task = new DailySummary(
             chatsMock, botClientMock, executionRepoMock, loggerMock,
-            whitelistMock, messageRepoMock, openAiServiceMock);
+            whitelistMock, messageRepoMock, new SummaryOpenAiClient(openAiServiceMock, "summary"));
 
         // Act
         await task.Execute();

@@ -2,26 +2,28 @@
 using OpenAI.Interfaces;
 using OpenAI.ObjectModels;
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Ungerfall.ChatGpt.TelegramBot.Configuration;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Commands;
 public class GenerateImage
 {
-    private readonly IOpenAIService _openAiService;
+    private readonly IOpenAIService? _openAiService;
     private readonly ITelegramBotClient _botClient;
     private readonly ILogger<GenerateImage> _logger;
 
     public GenerateImage(
-        IOpenAIService openAiService,
+        ImageOpenAiClient openAiClient,
         ILogger<GenerateImage> logger,
         ITelegramBotClient botClient)
     {
-        _openAiService = openAiService;
+        _openAiService = openAiClient.Service;
         _logger = logger;
         _botClient = botClient;
     }
@@ -42,6 +44,16 @@ public class GenerateImage
                 cancellationToken: cancellation);
         }
 
+        if (_openAiService == null)
+        {
+            if (beforeSend != null) await beforeSend();
+            return await _botClient.SendResponse(
+                chatId: message.Chat.Id,
+                text: "Image generation is not configured.",
+                replyParameters: message.Id,
+                cancellationToken: cancellation);
+        }
+
         await _botClient.SendChatAction(
             chatId: message.Chat.Id,
             ChatAction.UploadPhoto,
@@ -50,19 +62,19 @@ public class GenerateImage
             new OpenAI.ObjectModels.RequestModels.ImageCreateRequest
             {
                 Prompt = msgWithoutCommand,
-                Size = StaticValues.ImageStatics.Size.Size256,
+                Size = StaticValues.ImageStatics.Size.Size1024,
                 N = 1,
-                User = message.From?.Username ?? "unknown",
             },
             cancellation);
-        if (image.Successful)
+        if (image.Successful && image.Results?.Count > 0 && !string.IsNullOrWhiteSpace(image.Results[0].B64))
         {
+            using var stream = new MemoryStream(Convert.FromBase64String(image.Results[0].B64));
             if (beforeSend != null) await beforeSend();
             try
             {
                 return await _botClient.SendPhoto(
                     chatId: message.Chat.Id,
-                    photo: InputFile.FromUri(image.Results[0].Url),
+                    photo: InputFile.FromStream(stream, "image.png"),
                     hasSpoiler: true,
                     replyParameters: message.Id,
                     cancellationToken: cancellation);

@@ -1,5 +1,4 @@
 ﻿using Microsoft.Azure.Cosmos;
-using OpenAI.Managers;
 using System.CommandLine;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -55,15 +54,9 @@ rootCommand.SetHandler(async file =>
         return;
     }
 
-    var openAiApiKey = MaskInput("Enter your Open AI API key");
     var cosmosDbConn = MaskInput("Enter your cosmos db connection string");
     Console.WriteLine("Enter comma-separated chat ids:");
     long[] chats = (Console.ReadLine() ?? string.Empty).Split(',').Select(long.Parse).ToArray();
-    var openAiService = new OpenAIService(new OpenAI.OpenAiOptions
-    {
-        ApiKey = openAiApiKey,
-        DefaultModelId = OpenAI.ObjectModels.Models.Gpt_4o_mini,
-    });
     var cosmosClient = new CosmosClient(
         cosmosDbConn,
         clientOptions: new CosmosClientOptions
