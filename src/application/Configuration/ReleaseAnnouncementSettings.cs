@@ -9,7 +9,8 @@ public sealed class ReleaseAnnouncementSettings
 {
     public ReleaseAnnouncementSettings(
         bool enabled = false, string? version = null,
-        string repository = "ungerfall-coauthored/chatgpt-telegrambot", int maxCommits = 50, int retryDelayMinutes = 15)
+        string repository = "ungerfall-coauthored/chatgpt-telegrambot", int maxCommits = 50, int retryDelayMinutes = 15,
+        bool requireDeploymentApproval = true)
     {
         if (enabled && !IsCommit(version))
             throw new ArgumentException("ReleaseVersion must be the full deployed Git commit SHA.");
@@ -24,6 +25,7 @@ public sealed class ReleaseAnnouncementSettings
         Repository = repository;
         MaxCommits = maxCommits;
         RetryDelay = TimeSpan.FromMinutes(retryDelayMinutes);
+        RequireDeploymentApproval = requireDeploymentApproval;
     }
 
     public bool Enabled { get; }
@@ -31,20 +33,25 @@ public sealed class ReleaseAnnouncementSettings
     public string Repository { get; }
     public int MaxCommits { get; }
     public TimeSpan RetryDelay { get; }
+    public bool RequireDeploymentApproval { get; }
+
+    public static string ArtifactVersion =>
+        typeof(ReleaseAnnouncementSettings).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+', 2)
+            is { Length: 2 } parts ? parts[1] : string.Empty;
 
     public static bool IsCommit(string? value) =>
         value != null && Regex.IsMatch(value, @"\A[0-9a-fA-F]{40}\z");
 
     public static ReleaseAnnouncementSettings FromEnvironment()
     {
-        var information = typeof(ReleaseAnnouncementSettings).Assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
         var version = Environment.GetEnvironmentVariable("ReleaseVersion")
-            ?? (information?.Split('+', 2) is { Length: 2 } parts ? parts[1] : null);
+            ?? ArtifactVersion;
         return new ReleaseAnnouncementSettings(
             bool.Parse(Environment.GetEnvironmentVariable("ReleaseAnnouncementsEnabled") ?? "false"),
             version, Environment.GetEnvironmentVariable("ReleaseRepository") ?? "ungerfall-coauthored/chatgpt-telegrambot",
             int.Parse(Environment.GetEnvironmentVariable("ReleaseNotesMaxCommits") ?? "50", CultureInfo.InvariantCulture),
-            int.Parse(Environment.GetEnvironmentVariable("ReleaseRetryDelayMinutes") ?? "15", CultureInfo.InvariantCulture));
+            int.Parse(Environment.GetEnvironmentVariable("ReleaseRetryDelayMinutes") ?? "15", CultureInfo.InvariantCulture),
+            bool.Parse(Environment.GetEnvironmentVariable("ReleaseAnnouncementsRequireApproval") ?? "true"));
     }
 }

@@ -22,6 +22,8 @@ public sealed class ReleaseAnnouncementService(
     public async Task Execute(CancellationToken cancellation)
     {
         if (!settings.Enabled) return;
+        if (settings.RequireDeploymentApproval
+            && !await repository.IsDeploymentApproved(settings.Version, cancellation)) return;
         var groups = whitelist.GetAllowedGroupIds().Concat(testUsers.GetOptional()).Where(id => id < 0).Distinct();
         var summaries = new Dictionary<string, Task<string>>();
         foreach (var chatId in groups)

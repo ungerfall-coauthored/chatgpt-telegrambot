@@ -31,6 +31,22 @@ public class ReleaseAnnouncementTests
         Assert.Empty(fixture.Bot.ReceivedCalls());
     }
 
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 1)]
+    public async Task DeploymentApprovalGatesAllGroupWork(bool approved, int messages)
+    {
+        var fixture = new Fixture();
+        fixture.Repository.IsDeploymentApproved(Version, Arg.Any<CancellationToken>()).Returns(approved);
+        await fixture.Create(requireApproval: true).Execute(default);
+        Assert.Equal(messages, fixture.Messages.Count);
+        if (!approved)
+        {
+            Assert.Empty(fixture.Whitelist.ReceivedCalls());
+            Assert.Empty(fixture.Notes.ReceivedCalls());
+        }
+    }
+
     [Fact]
     public async Task SendsOnlyOncePerVersionToDistinctAllowedGroups_AndSharesRussianSummary()
     {
@@ -173,8 +189,8 @@ public class ReleaseAnnouncementTests
                 .Returns(new Message { Id = 1 });
         }
 
-        public ReleaseAnnouncementService Create(bool enabled = true, string version = Version) => new(
-            new ReleaseAnnouncementSettings(enabled, version), Whitelist, TestUsers, Repository, Notes,
+        public ReleaseAnnouncementService Create(bool enabled = true, string version = Version, bool requireApproval = false) => new(
+            new ReleaseAnnouncementSettings(enabled, version, requireDeploymentApproval: requireApproval), Whitelist, TestUsers, Repository, Notes,
             new SummaryOpenAiClient(Ai, "summary"), Bot, NullLogger<ReleaseAnnouncementService>.Instance);
     }
 

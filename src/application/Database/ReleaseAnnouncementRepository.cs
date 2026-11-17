@@ -21,6 +21,29 @@ public sealed class ReleaseAnnouncementRepository : IReleaseAnnouncementReposito
         _settings = settings;
     }
 
+    public async Task<bool> IsDeploymentApproved(string version, CancellationToken cancellation)
+    {
+        try
+        {
+            var response = await _container.ReadItemAsync<ReleaseDeploymentApproval>(
+                "release-deployment:" + version, new PartitionKey(0), cancellationToken: cancellation);
+            return response.Resource.Version == version;
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound) { return false; }
+    }
+
+    public async Task ApproveDeployment(string version, CancellationToken cancellation)
+    {
+        if (!ReleaseAnnouncementSettings.IsCommit(version))
+            throw new ArgumentException("Deployment approval requires a full commit SHA.");
+        var approval = new ReleaseDeploymentApproval { Id = "release-deployment:" + version, Version = version };
+        try
+        {
+            await _container.CreateItemAsync(approval, new PartitionKey(0), cancellationToken: cancellation);
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.Conflict) { }
+    }
+
     public async Task<ReleaseAnnouncementReceipt?> Begin(long chatId, string version, CancellationToken cancellation)
     {
         for (var attempt = 0; attempt < 3; attempt++)
