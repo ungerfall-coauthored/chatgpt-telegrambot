@@ -324,18 +324,13 @@ public class UpdateHandler
         }
         else
         {
-            var history = new ConversationHistory(_telegramMessagesRepository, $"{user}: {message}", _tokenCounter, _whitelist, messageThreadId);
+            var history = new ConversationHistory(_telegramMessagesRepository, $"{user}: {message}", _tokenCounter, _whitelist,
+                messageThreadId, _azureOpenAi.Chat.InputTokens);
             (gptMessage, tokensCount) = await history.GetForChatGpt(chatId, cancellation);
         }
         var completionResult = await _openAiService.ChatCompletion.CreateCompletion(
-            new ChatCompletionCreateRequest
-            {
-                Messages = gptMessage,
-                Temperature = 0f,
-                User = user,
-                MaxCompletionTokens = autonomous ? 120 : null,
-                Model = _azureOpenAi.ChatDeployment
-            },
+            _azureOpenAi.Chat.CreateRequest(gptMessage, _azureOpenAi.ChatDeployment, _tokenCounter, user,
+                maxCompletionTokens: autonomous ? _azureOpenAi.AutonomousMaxCompletionTokens : null),
             _azureOpenAi.ChatDeployment,
             cancellationToken: cancellation);
         _logger.LogInformation("Tokens: {@tokens}",

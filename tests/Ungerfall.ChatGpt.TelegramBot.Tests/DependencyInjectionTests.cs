@@ -55,7 +55,9 @@ public class DependencyInjectionTest
             foreach (var ctorType in constructors
                 .Select(x => x.GetParameters())
                 .Where(x => x.Length > 0)
-                .SelectMany(x => x, (_, pi) => pi.ParameterType)
+                .SelectMany(x => x)
+                .Where(pi => !pi.HasDefaultValue)
+                .Select(pi => pi.ParameterType)
                 .Where(x => assemblies.Contains(x.Assembly)))
             {
                 try

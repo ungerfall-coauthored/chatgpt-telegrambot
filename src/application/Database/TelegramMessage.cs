@@ -6,7 +6,6 @@ namespace Ungerfall.ChatGpt.TelegramBot.Database;
 public class TelegramMessage
 {
     public const string DATE_UTC_FORMAT = "yyyy-MM-dd";
-    public const int TTL_SECONDS = 1 * 24 * 60 * 60;
 
     [JsonPropertyName("id")]
     public string Id { get; init; } = null!;
