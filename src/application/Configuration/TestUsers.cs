@@ -5,6 +5,10 @@ using System.Linq;
 namespace Ungerfall.ChatGpt.TelegramBot.Configuration;
 public class TestUsers
 {
+    public virtual ImmutableHashSet<long> GetOptional() =>
+        Environment.GetEnvironmentVariable("TestUsers", EnvironmentVariableTarget.Process) == null
+            ? ImmutableHashSet<long>.Empty : Get();
+
     public ImmutableHashSet<long> Get()
     {
         var testUsersEnv = Environment.GetEnvironmentVariable("TestUsers", EnvironmentVariableTarget.Process)
