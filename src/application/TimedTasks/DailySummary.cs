@@ -23,7 +23,6 @@ public class DailySummary : TimedTask
             Если есть неотвеченные вопросы, перечисли их и ответь.
             В конце с новой строки добавь самые релевантные #теги переписки до 5 штук.
             """;
-    private const float Temperature = .2f;
 
     private readonly DailySummaryChats _chats;
     private readonly IWhitelist _whitelist;
@@ -31,6 +30,7 @@ public class DailySummary : TimedTask
     private readonly IOpenAIService _openAiService;
     private readonly ILogger<DailySummary> _logger;
     private readonly string _model;
+    private readonly CompletionSettings _settings;
 
     public DailySummary(
         DailySummaryChats chats,
@@ -46,6 +46,7 @@ public class DailySummary : TimedTask
         _messages = messages;
         _openAiService = openAiClient.Service;
         _model = openAiClient.Deployment;
+        _settings = openAiClient.Settings;
         _logger = logger;
     }
 
@@ -81,9 +82,10 @@ public class DailySummary : TimedTask
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var systemRole = _whitelist.GetSystemRoleMessage(chatId);
         await foreach (var batch in ChatMessageBuilder.CreateBatches(
-            GetOrderedHistory(chatId, today, cancellation), systemRole, Prompt, cancellation: cancellation))
+            GetOrderedHistory(chatId, today, cancellation), systemRole, Prompt, cancellation: cancellation,
+            maxTokens: _settings.InputTokens))
         {
-            yield return new ChatCompletionCreateRequest { Messages = batch, Temperature = Temperature, Model = _model };
+            yield return _settings.CreateRequest(batch, _model);
         }
     }
 
@@ -128,8 +130,9 @@ public class DailySummary : TimedTask
             .CreateCompletion(request, _model, cancellationToken: cancellation);
         _logger.LogInformation("Daily summary tokens for chat {ChatId}: {@tokens}", chatId,
             new { completionResult.Usage?.PromptTokens, completionResult.Usage?.CompletionTokens, completionResult.Usage?.TotalTokens });
-        return completionResult.Successful
+        return completionResult.Successful && completionResult.Choices?.Count > 0
+            && completionResult.Choices[0].FinishReason != "length"
             ? completionResult?.Choices[0]?.Message?.Content ?? "Successful, but no content."
-            : throw new ApplicationException(completionResult?.Error?.Message ?? "Error sending open ai api request");
+            : throw new ApplicationException(completionResult?.Error?.Message ?? "Summary request failed, was truncated, or returned no choices.");
     }
 }

@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
 using Ungerfall.ChatGpt.TelegramBot.Database;
+using Ungerfall.ChatGpt.TelegramBot.Configuration;
 
 namespace Ungerfall.ChatGpt.TelegramBot;
 public sealed class ChatMessageBuilder :
@@ -25,10 +26,11 @@ public sealed class ChatMessageBuilder :
 
     private ChatMessageBuilder(int maxTokens)
     {
+        if (maxTokens <= 0) throw new ArgumentOutOfRangeException(nameof(maxTokens));
         _maxTokens = maxTokens;
     }
 
-    public static IChatMessageBuilderTokenCounterState Create(int maxTokens = 1638)
+    public static IChatMessageBuilderTokenCounterState Create(int maxTokens = CompletionSettings.DefaultChatInputTokens)
     {
         return new ChatMessageBuilder(maxTokens);
     }
@@ -45,6 +47,8 @@ public sealed class ChatMessageBuilder :
         _lastUserMessage = lastUserMessage == null ? null : ChatMessage.FromUser(lastUserMessage);
         // Chat framing follows the gpt-4o/mini estimate; API usage remains the authoritative count.
         _tokensSum = 3 + Count(_message[0]) + (_lastUserMessage == null ? 0 : Count(_lastUserMessage));
+        if (_tokensSum > _maxTokens)
+            throw new InvalidOperationException("System prompt and current message exceed the configured input token budget.");
         return this;
     }
 
@@ -69,7 +73,7 @@ public sealed class ChatMessageBuilder :
 
     public bool CanAddMessage(TelegramMessage message) => CanAdd(Format(message, message.Message));
 
-    private bool CanAdd(ChatMessage message) => _tokensSum + Count(message) <= _maxTokens;
+    private bool CanAdd(ChatMessage message) => (long)_tokensSum + Count(message) <= _maxTokens;
 
     private int Count(ChatMessage message) => 3 + _tokenCounter.Count(message.Role) + _tokenCounter.Count(message.Content ?? string.Empty);
 
@@ -82,13 +86,12 @@ public sealed class ChatMessageBuilder :
 
     public static async IAsyncEnumerable<ChatMessage[]> CreateBatches(
         IAsyncEnumerable<TelegramMessage> history, string systemRole, string instruction,
-        ITokenCounter? tokenCounter = null, [EnumeratorCancellation] CancellationToken cancellation = default)
+        ITokenCounter? tokenCounter = null, [EnumeratorCancellation] CancellationToken cancellation = default,
+        int maxTokens = CompletionSettings.DefaultSummaryInputTokens)
     {
-        var budget = int.Parse(Environment.GetEnvironmentVariable("SummaryChunkTokens", EnvironmentVariableTarget.Process) ?? "3072");
-        if (budget is < 512 or > 32768) throw new ArgumentOutOfRangeException(nameof(budget));
         ChatMessageBuilder NewBuilder()
         {
-            var result = new ChatMessageBuilder(budget);
+            var result = new ChatMessageBuilder(maxTokens);
             result.WithTokenCounter(tokenCounter);
             result.WithSystemRoleMessage(systemRole, instruction);
             return result;

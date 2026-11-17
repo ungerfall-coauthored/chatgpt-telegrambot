@@ -35,7 +35,7 @@ public class TooLongDidNotReadToday
     public TooLongDidNotReadToday(
         ITelegramMessageRepository history,
         ITokenCounter tokenCounter,
-        IOpenAIService openAiService,
+        SummaryOpenAiClient openAiClient,
         ILogger<TooLongDidNotReadToday> logger,
         ITelegramBotClient botClient,
         IWhitelist whitelist,
@@ -44,7 +44,7 @@ public class TooLongDidNotReadToday
     {
         _history = history;
         _tokenCounter = tokenCounter;
-        _openAiService = openAiService;
+        _openAiService = openAiClient.Service;
         _logger = logger;
         _botClient = botClient;
         _whitelist = whitelist;
@@ -67,9 +67,10 @@ public class TooLongDidNotReadToday
         using var historyHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var requests = new List<ChatCompletionCreateRequest>();
         await foreach (var batch in ChatMessageBuilder.CreateBatches(
-            GetHistory(chatId, today, messageThreadId, historyHash, cancellation), _whitelist.GetSystemRoleMessage(chatId), AskForTLDR, _tokenCounter, cancellation))
+            GetHistory(chatId, today, messageThreadId, historyHash, cancellation), _whitelist.GetSystemRoleMessage(chatId), AskForTLDR,
+            _tokenCounter, cancellation, maxTokens: _azureOpenAi.Summary.InputTokens))
         {
-            requests.Add(new ChatCompletionCreateRequest { Messages = batch, Temperature = .2f, Model = _azureOpenAi.ChatDeployment });
+            requests.Add(_azureOpenAi.Summary.CreateRequest(batch, _azureOpenAi.SummaryDeployment, _tokenCounter));
         }
 
         string? summary = null;
@@ -81,7 +82,7 @@ public class TooLongDidNotReadToday
                 version = 2, chatId, day = today, topic = messageThreadId ?? 0,
                 endpoint = _azureOpenAi.Endpoint, apiVersion = _azureOpenAi.ApiVersion,
                 history = Convert.ToHexString(historyHash.GetHashAndReset()),
-                requests = requests.Select(r => new { r.Model, r.Temperature, messages = r.Messages.Select(m => new { m.Role, m.Content }) }),
+                requests = requests.Select(r => new { r.Model, r.Temperature, r.MaxCompletionTokens, messages = r.Messages.Select(m => new { m.Role, m.Content }) }),
             })));
             var cache = await _cache.BeginTldr(chatId, FormattableString.Invariant($"tldr:{today:yyyy-MM-dd}:{messageThreadId ?? 0}:{hash}"), cancellation);
             summary = cache.Summary;
@@ -173,7 +174,8 @@ public class TooLongDidNotReadToday
                 completionResult.Usage?.TotalTokens
             });
         var content = completionResult.Choices?.Count > 0 ? completionResult.Choices[0].Message?.Content : null;
-        if (completionResult.Successful && !string.IsNullOrWhiteSpace(content))
+        if (completionResult.Successful && !string.IsNullOrWhiteSpace(content)
+            && completionResult.Choices![0].FinishReason != "length")
         {
             return (content, true);
         }

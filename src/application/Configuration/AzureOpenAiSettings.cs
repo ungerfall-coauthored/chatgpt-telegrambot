@@ -3,12 +3,14 @@ using OpenAI;
 using OpenAI.Interfaces;
 using OpenAI.Managers;
 using System;
+using System.Globalization;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Configuration;
 
 public sealed class AzureOpenAiSettings
 {
-    public AzureOpenAiSettings(string endpoint, string apiKey, string chatDeployment, string? summaryDeployment, string? imageDeployment, string apiVersion, string imageApiVersion = "2025-04-01-preview")
+    public AzureOpenAiSettings(string endpoint, string apiKey, string chatDeployment, string? summaryDeployment, string? imageDeployment, string apiVersion, string imageApiVersion = "2025-04-01-preview",
+        CompletionSettings? chat = null, CompletionSettings? summary = null, int? autonomousMaxCompletionTokens = null)
     {
         if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps
             || uri.AbsolutePath != "/" || !string.IsNullOrEmpty(uri.UserInfo)
@@ -25,6 +27,11 @@ public sealed class AzureOpenAiSettings
         ImageDeployment = string.IsNullOrWhiteSpace(imageDeployment) ? null : imageDeployment;
         ApiVersion = apiVersion;
         ImageApiVersion = imageApiVersion;
+        Chat = chat ?? new CompletionSettings();
+        Summary = summary ?? new CompletionSettings(inputTokens: CompletionSettings.DefaultSummaryInputTokens, temperature: .2f);
+        AutonomousMaxCompletionTokens = autonomousMaxCompletionTokens ?? Math.Min(120, Chat.MaxCompletionTokens);
+        if (AutonomousMaxCompletionTokens <= 0 || AutonomousMaxCompletionTokens > Chat.MaxCompletionTokens)
+            throw new ArgumentOutOfRangeException(nameof(autonomousMaxCompletionTokens));
     }
 
     public string Endpoint { get; }
@@ -34,6 +41,9 @@ public sealed class AzureOpenAiSettings
     public string? ImageDeployment { get; }
     public string ApiVersion { get; }
     public string ImageApiVersion { get; }
+    public CompletionSettings Chat { get; }
+    public CompletionSettings Summary { get; }
+    public int AutonomousMaxCompletionTokens { get; }
 
     public static AzureOpenAiSettings FromEnvironment() => new(
         Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT") ?? "",
@@ -42,7 +52,11 @@ public sealed class AzureOpenAiSettings
         Environment.GetEnvironmentVariable("AZURE_OPENAI_SUMMARY_DEPLOYMENT"),
         Environment.GetEnvironmentVariable("AZURE_OPENAI_IMAGE_DEPLOYMENT"),
         Environment.GetEnvironmentVariable("AZURE_OPENAI_API_VERSION") ?? "2024-10-21",
-        Environment.GetEnvironmentVariable("AZURE_OPENAI_IMAGE_API_VERSION") ?? "2025-04-01-preview");
+        Environment.GetEnvironmentVariable("AZURE_OPENAI_IMAGE_API_VERSION") ?? "2025-04-01-preview",
+        CompletionSettings.FromEnvironment(),
+        CompletionSettings.FromEnvironment(summary: true),
+        Environment.GetEnvironmentVariable("AZURE_OPENAI_AUTONOMOUS_MAX_COMPLETION_TOKENS") is { } autonomousTokens
+            ? int.Parse(autonomousTokens, CultureInfo.InvariantCulture) : null);
 
     public OpenAiOptions CreateOptions(string deployment, bool image = false) => new()
     {
@@ -57,9 +71,15 @@ public sealed class AzureOpenAiSettings
 
 public sealed class SummaryOpenAiClient : IDisposable
 {
-    public SummaryOpenAiClient(IOpenAIService service, string deployment) { Service = service; Deployment = deployment; }
+    public SummaryOpenAiClient(IOpenAIService service, string deployment, CompletionSettings? settings = null)
+    {
+        Service = service;
+        Deployment = deployment;
+        Settings = settings ?? new CompletionSettings(inputTokens: CompletionSettings.DefaultSummaryInputTokens, temperature: .2f);
+    }
     public IOpenAIService Service { get; }
     public string Deployment { get; }
+    public CompletionSettings Settings { get; }
     public void Dispose() => (Service as IDisposable)?.Dispose();
 }
 
@@ -78,7 +98,7 @@ public static class AzureOpenAiServiceCollectionExtensions
         services.AddSingleton(settings);
         services.AddSingleton<IOpenAIService>(_ => new OpenAIService(settings.CreateOptions(settings.ChatDeployment)));
         services.AddSingleton(_ => new SummaryOpenAiClient(
-            new OpenAIService(settings.CreateOptions(settings.SummaryDeployment)), settings.SummaryDeployment));
+            new OpenAIService(settings.CreateOptions(settings.SummaryDeployment)), settings.SummaryDeployment, settings.Summary));
         services.AddSingleton(_ => new ImageOpenAiClient(settings.ImageDeployment == null
             ? null : new OpenAIService(settings.CreateOptions(settings.ImageDeployment, image: true))));
         return services;

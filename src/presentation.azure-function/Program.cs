@@ -52,6 +52,8 @@ namespace Ungerfall.ChatGpt.TelegramBot.AzureFunction
                            "CosmosTimedTasksContainer",
                            EnvironmentVariableTarget.Process)
                            ?? throw new ArgumentException("CosmosTimedTasksContainer is missing");
+                       opt.MessageRetentionDays = int.Parse(Environment.GetEnvironmentVariable("MessageRetentionDays") ?? "1",
+                           System.Globalization.CultureInfo.InvariantCulture);
                    });
                    s.AddAzureClients(c => c.AddServiceBusClient(Environment.GetEnvironmentVariable(
                        "ServiceBusConnection",

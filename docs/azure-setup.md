@@ -16,10 +16,11 @@ budget and alerts. Alerts are not a hard spending cap.
    [Azure portal](https://portal.azure.com/). Create an **Azure OpenAI** resource
    in a region with quota for your desired models.
 2. Open Microsoft Foundry from the resource and deploy a chat-completions model
-   compatible with the 2024-10-21 Azure API (for example `gpt-4o-mini`, if
-   available). Record the **deployment name**, not just the model name. Optionally
-   deploy `gpt-4o` separately for daily summaries; otherwise summaries use the
-   chat deployment, unlike the upstream default.
+   compatible with your chosen Azure API version. Record the **deployment
+   name**, not just the model name. A small model is a sensible starting point
+   for a low-volume group; compare current regional prices and availability.
+   Optionally deploy a different model for summaries; otherwise they use the
+   chat deployment. Both daily summaries and `/tldrtoday` use this selection.
 3. Optional: deploy an available GPT-image model supported by the
    `2025-04-01-preview` image API. Image generation incurs additional charges.
    The integration below expects base64 PNG output at 1024x1024. DALL-E 3 is
@@ -39,11 +40,77 @@ budget and alerts. Alerts are not a hard spending cap.
 | `AZURE_OPENAI_IMAGE_API_VERSION` | Optional; defaults to `2025-04-01-preview` |
 
 Use models compatible with the request parameters and the chosen API versions.
-Token budgeting currently uses the `gpt-4o-mini` tokenizer, so different model
-families may need different budgeting. The optional upstream Decisions feature
+See the request settings below before switching model families. The optional upstream Decisions feature
 is a **separate OpenAI API** integration, not Azure: leave `DECISIONS_API_KEY`
 unset and `DecisionsEnabled`, `ContinuationEnabled`, and `AutonomousEnabled`
 false unless you deliberately configure and accept that separate service.
+
+### Context windows, request budgets, and model compatibility
+
+The old 1,638-token chat limit and 3,072-token summary chunks are replaced with
+configurable budgets. Defaults are deliberately smaller than a model's full
+context window: a large window is capacity, not free memory. History is sent and
+billed again on each request. Chat keeps the newest fitting messages in
+chronological order; summaries still split larger inputs into bounded chunks.
+
+Set these in Function App **Environment variables** (or export them for the
+worker/local tests). Each suffix has two independent settings: prefix it with
+`AZURE_OPENAI_CHAT_` or `AZURE_OPENAI_SUMMARY_`.
+
+| Suffix | Chat default | Summary default | Meaning |
+| --- | --- | --- | --- |
+| `CONTEXT_WINDOW_TOKENS` | `128000` | `128000` | Set to the actual model/version context capacity; not discovered automatically |
+| `INPUT_TOKENS` | `16384` | `32768` | Maximum estimated input, including system prompt, instruction, current message, and message framing |
+| `MAX_COMPLETION_TOKENS` | `2048` | `2048` | API output ceiling, including reasoning tokens when applicable |
+| `SAFETY_MARGIN_TOKENS` | `1024` | `1024` | Additional headroom for tokenizer/framing differences |
+| `TEMPERATURE` | `0` | `0.2` | Number from 0 to 2, or `omit` to exclude the parameter entirely |
+
+Configuration must satisfy **input + max completion + safety margin <= context
+window**. Increasing only the window does not increase the input budget.
+Invalid budgets fail before an API call. Mandatory input that exceeds the budget
+is rejected, not silently truncated; increase the input budget or shorten it.
+`SummaryChunkTokens` remains a legacy fallback for summary input tokens, but
+`AZURE_OPENAI_SUMMARY_INPUT_TOKENS` takes precedence; the old 32K ceiling is gone.
+
+For example, after confirming your model's capacity, you can increase
+`AZURE_OPENAI_CHAT_INPUT_TOKENS` to `32768`, keeping the remaining defaults.
+For a model that does not accept custom sampling temperature, set **both**
+`AZURE_OPENAI_CHAT_TEMPERATURE=omit` and
+`AZURE_OPENAI_SUMMARY_TEMPERATURE=omit`, including when the same deployment
+serves both workloads. Shrinking uses the chat profile too.
+
+Newer reasoning models are not automatically drop-in replacements. Select an
+API version that supports the exact deployed model and Chat Completions, omit
+unsupported temperature, and allow sufficient completion tokens for reasoning
+and visible text (for example, try `8192` rather than `2048` and measure).
+The pinned SDK does not expose a reasoning-effort setting; it uses the service's
+default. This configuration does not add Responses API support or guarantee
+compatibility with every model. Consult Microsoft's
+[reasoning-model guidance](https://learn.microsoft.com/azure/foundry/openai/how-to/reasoning)
+and run the opt-in tests before switching.
+
+Additional settings:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `AZURE_OPENAI_TOKEN_ENCODING` | `o200k_base` | SharpToken encoding name, shared by chat and summaries; use one appropriate for the deployed model families |
+| `AZURE_OPENAI_AUTONOMOUS_MAX_COMPLETION_TOKENS` | `120`, capped by chat output limit | Output ceiling for optional autonomous interjections; increase if reasoning consumes it |
+| `MessageRetentionDays` | `1` | Positive whole days to retain **newly stored** messages; set `7` for a week if the group accepts the longer retention |
+| `ShrinkMinimumTokens` | `512` | Minimum message size eligible for the existing shrink job; positive integer, no old 32K ceiling |
+
+Token counting is an estimate; retain a safety margin and use API-reported usage
+as authoritative. A larger context does not recover deleted history. Retention
+changes do not rewrite existing documents' TTLs; enable Cosmos container TTL
+for per-item expiration to take effect. Longer retention increases stored data
+and may increase request costs. Daily summaries and `/tldrtoday` still summarize
+the current UTC day, not the entire retention period.
+
+The Azure shrink job still runs on messages older than an hour. Larger windows
+make aggressive shrinking less necessary: raise `ShrinkMinimumTokens` or set
+`AzureWebJobs.ShrinkMessage.Disabled=true` to retain verbatim text. Original text
+is preserved in `OriginalMessage` when a message is shrunk; disabling the job
+does not restore previously shortened messages. Telegram's 4,096-character send
+limit, delivery chunking, and reply-frequency/cooldown safeguards are unchanged.
 
 ## 2. Run live Azure tests locally
 
@@ -65,8 +132,10 @@ dotnet test tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.Telegram
 unset AZURE_OPENAI_API_KEY AZURE_OPENAI_LIVE_TEST
 ```
 
-The test makes one short paid chat request per distinct deployment and, if
-configured, one paid image request. It does not test Telegram or Cosmos DB.
+The test makes one short paid request for each chat/summary profile, even when
+they use the same deployment, and, if configured, one paid image request.
+It uses the configured temperatures, completion limits, and API version.
+It does not test Telegram or Cosmos DB or validate a full-size context request.
 Failures can mean key, networking, quota, deployment, model, or API-version
 incompatibility. Never paste the key or a connection string into logs or chat.
 CI does not run live tests or receive these secrets.

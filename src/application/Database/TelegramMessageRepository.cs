@@ -15,6 +15,7 @@ public class TelegramMessageRepository : ITelegramMessageRepository
     private readonly CosmosClient _cosmos;
     private readonly CosmosDbOptions _options;
     private readonly ILogger<TelegramMessageRepository> _logger;
+    private readonly int _messageTtlSeconds;
 
     public TelegramMessageRepository(
         CosmosClient cosmos,
@@ -23,6 +24,7 @@ public class TelegramMessageRepository : ITelegramMessageRepository
     {
         _cosmos = cosmos;
         _options = options.Value;
+        _messageTtlSeconds = _options.MessageTtlSeconds;
         _logger = logger;
     }
 
@@ -42,7 +44,7 @@ public class TelegramMessageRepository : ITelegramMessageRepository
                 Message = message.Message,
                 Date = message.Date,
                 DateUtc = date,
-                TTL = TelegramMessage.TTL_SECONDS,
+                TTL = _messageTtlSeconds,
             },
             new PartitionKey(message.ChatId),
             new ItemRequestOptions

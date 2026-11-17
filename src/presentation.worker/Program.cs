@@ -28,6 +28,8 @@ IHost host = Host.CreateDefaultBuilder(args)
             opt.MessagesContainerId = context.Configuration["CosmosTelegramMessagesContainer"] ?? throw new ArgumentNullException(nameof(context));
             opt.ConnectionString = context.Configuration["CosmosDbConnectionString"] ?? throw new ArgumentNullException(nameof(context));
             opt.TimedTasksContainerId = context.Configuration["CosmosTimedTasksContainer"] ?? throw new ArgumentNullException(nameof(context));
+            opt.MessageRetentionDays = int.Parse(context.Configuration["MessageRetentionDays"] ?? "1",
+                System.Globalization.CultureInfo.InvariantCulture);
         });
 
         services.AddHttpClient("telegram_bot_client")

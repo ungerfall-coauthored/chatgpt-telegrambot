@@ -2,6 +2,7 @@
 using System.Threading;
 using System.Threading.Tasks;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
+using Ungerfall.ChatGpt.TelegramBot.Configuration;
 
 namespace Ungerfall.ChatGpt.TelegramBot;
 public class ConversationHistory
@@ -11,24 +12,27 @@ public class ConversationHistory
     private readonly ITokenCounter _tokenCounter;
     private readonly IWhitelist _whitelist;
     private readonly int? _messageThreadId;
+    private readonly int _inputTokens;
 
     public ConversationHistory(
         ITelegramMessageRepository history,
         string message,
         ITokenCounter tokenCounter,
         IWhitelist whitelist,
-        int? messageThreadId = default)
+        int? messageThreadId = default,
+        int inputTokens = CompletionSettings.DefaultChatInputTokens)
     {
         _history = history;
         _message = message;
         _tokenCounter = tokenCounter;
         _whitelist = whitelist;
         _messageThreadId = messageThreadId;
+        _inputTokens = inputTokens;
     }
 
     public async Task<(ChatMessage[], int tokens)> GetForChatGpt(long chatId, CancellationToken cancellation)
     {
-        var mb = ChatMessageBuilder.Create()
+        var mb = ChatMessageBuilder.Create(_inputTokens)
             .WithTokenCounter(_tokenCounter)
             .WithSystemRoleMessage(_whitelist.GetSystemRoleMessage(chatId), _message);
         await foreach (var h in _history.GetAllOrderByDateDescending(chatId, cancellation))

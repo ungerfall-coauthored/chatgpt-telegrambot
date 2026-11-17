@@ -71,10 +71,13 @@ public class AzureOpenAiTests
         Assert.Throws<ArgumentException>(() => new AzureOpenAiSettings(endpoint, "key", "chat", null, null, "2024-10-21"));
     }
 
-    [Fact]
-    public async Task ClientsUseAzureDeploymentsAndApiKey()
+    [Theory]
+    [InlineData(0f)]
+    [InlineData(null)]
+    public async Task ClientsUseAzureDeploymentsAndApiKey(float? temperature)
     {
-        var settings = TestAzureSettings.Create();
+        var profile = new CompletionSettings(temperature: temperature, maxCompletionTokens: 4096);
+        var settings = TestAzureSettings.Create(chat: profile, summary: profile);
         foreach (var (deployment, image) in new[] { (settings.ChatDeployment, false), (settings.SummaryDeployment, false), (settings.ImageDeployment!, true) })
         {
             var handler = new CaptureHandler(image);
@@ -87,14 +90,17 @@ public class AzureOpenAiTests
             }
             else
             {
-                var result = await service.ChatCompletion.CreateCompletion(new ChatCompletionCreateRequest
-                {
-                    Messages = [ChatMessage.FromUser("test")],
-                    Model = deployment
-                }, deployment);
+                var result = await service.ChatCompletion.CreateCompletion(profile.CreateRequest(
+                    [ChatMessage.FromUser("test")], deployment), deployment);
                 Assert.Equal("ok", result.Choices[0].Message.Content);
                 using var body = JsonDocument.Parse(handler.Body!);
                 Assert.Equal(deployment, body.RootElement.GetProperty("model").GetString());
+                Assert.Equal(4096, body.RootElement.GetProperty("max_completion_tokens").GetInt32());
+                Assert.False(body.RootElement.TryGetProperty("max_tokens", out _));
+                if (temperature == null)
+                    Assert.False(body.RootElement.TryGetProperty("temperature", out _));
+                else
+                    Assert.Equal(temperature.Value, body.RootElement.GetProperty("temperature").GetSingle());
             }
 
             var operation = image ? "images/generations" : "chat/completions";

@@ -48,7 +48,7 @@ public class UpdateHandlerTest
 
         var handler = new UpdateHandler(
             botClientMock, loggerMock, openAiServiceMock, messageRepoMock, tokenCounterMock,
-            new TooLongDidNotReadToday(messageRepoMock, tokenCounterMock, openAiServiceMock,
+            new TooLongDidNotReadToday(messageRepoMock, tokenCounterMock, new SummaryOpenAiClient(openAiServiceMock, "test-summary"),
                 Substitute.For<ILogger<TooLongDidNotReadToday>>(), botClientMock, whitelistMock, Substitute.For<ITimedTaskExecutionRepository>(), TestAzureSettings.Create()),
             whitelistMock,
             new GenerateImage(new ImageOpenAiClient(openAiServiceMock), Substitute.For<ILogger<GenerateImage>>(), botClientMock),
@@ -124,7 +124,7 @@ public class UpdateHandlerTest
 
         var handler = new UpdateHandler(
             botClientMock, loggerMock, openAiServiceMock, messageRepoMock, tokenCounterMock,
-            new TooLongDidNotReadToday(messageRepoMock, tokenCounterMock, openAiServiceMock,
+            new TooLongDidNotReadToday(messageRepoMock, tokenCounterMock, new SummaryOpenAiClient(openAiServiceMock, "test-summary"),
                 Substitute.For<ILogger<TooLongDidNotReadToday>>(), botClientMock, whitelistMock, Substitute.For<ITimedTaskExecutionRepository>(), TestAzureSettings.Create()),
             whitelistMock,
             new GenerateImage(new ImageOpenAiClient(openAiServiceMock), Substitute.For<ILogger<GenerateImage>>(), botClientMock),

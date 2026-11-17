@@ -53,7 +53,8 @@ public class DailySummaryTest
 
         var task = new DailySummary(
             chatsMock, botClientMock, executionRepoMock, loggerMock,
-            whitelistMock, messageRepoMock, new SummaryOpenAiClient(openAiServiceMock, "summary"));
+            whitelistMock, messageRepoMock, new SummaryOpenAiClient(openAiServiceMock, "summary",
+                new CompletionSettings(inputTokens: 3072, maxCompletionTokens: 512, temperature: null)));
 
         // Act
         await task.Execute();
@@ -67,6 +68,8 @@ public class DailySummaryTest
         {
             Assert.Equal("System role", request.Messages.First().Content);
             Assert.Equal(3, request.Messages.Count);
+            Assert.Equal(512, request.MaxCompletionTokens);
+            Assert.Null(request.Temperature);
         });
         foreach (var message in messages)
         {

@@ -66,8 +66,10 @@ public class ShrinkMessageTest
                 Arg.Any<CancellationToken>());
     }
 
-    [Fact]
-    public async Task Run_ShouldNotShrinkMessage_WhenChatGPTRequestIsUnsuccessful()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Run_ShouldNotShrinkMessage_WhenChatGPTRequestFailsOrIsTruncated(bool truncated)
     {
         // Arrange
         var loggerMock = Substitute.For<ILogger<ShrinkMessage>>();
@@ -96,7 +98,10 @@ public class ShrinkMessageTest
                 Arg.Any<CancellationToken>())
             .Returns(new ChatCompletionCreateResponse
             {
-                Error = new Error(),
+                Error = truncated ? null : new Error(),
+                Choices = truncated
+                    ? [new ChatChoiceResponse { Message = ChatMessage.FromAssistant("Incomplete"), FinishReason = "length" }]
+                    : [],
             });
 
         var function = new ShrinkMessage(
@@ -108,6 +113,7 @@ public class ShrinkMessageTest
         // Act & Assert
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             function.Run(new TimerInfo { ScheduleStatus = default, IsPastDue = default }));
+        await messageRepoMock.DidNotReceive().Update(Arg.Any<TelegramMessage>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
