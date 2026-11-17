@@ -183,6 +183,58 @@ The copied upstream PR changes the Telegram queue wire format. Before switching
 an existing deployment, stop ingress and drain the old queue; do not run mixed
 versions. This fork has not been validated against a live Telegram deployment.
 
+## Deployment announcements
+
+The Function's `ReleaseAnnouncements` timer checks once a minute; the polling
+worker checks at startup and once a minute. **Disabled by default**, including
+locally. Do not enable it against the real bot while testing.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `ReleaseAnnouncementsEnabled` | `false` | Set `true` in the deployed app to announce versions |
+| `ReleaseVersion` | Git SHA embedded by the .NET SDK | Optional override: the full 40-character deployed commit SHA; required for packages built outside a Git checkout |
+| `ReleaseRepository` | `ungerfall-coauthored/chatgpt-telegrambot` | GitHub repository containing the deployed commits and merged PRs |
+| `ReleaseNotesMaxCommits` | `50` | Maximum commits compared between deployments (1–100); larger ranges fail visibly instead of silently omitting changes |
+| `ReleaseRetryDelayMinutes` | `15` | Backoff after pre-send failures or definite Telegram rejection (1–1440); avoids repeatedly paying for failed summary requests |
+| `GITHUB_RELEASE_NOTES_TOKEN` | unset | Optional secret with read-only **Contents** and **Pull requests** access, for private repositories or higher GitHub API limits |
+
+Each distinct deployed SHA produces one short Russian announcement for every
+whitelisted group and every **negative** group ID in `TestUsers`; private chats
+and the whitelist's default prompt entry are excluded. Review that whitelist
+before enabling this feature. Groups with the same prior version share one
+Azure summary request during a run. Summaries use the summary deployment and
+its input/output budgets. PR titles are supplied as untrusted data; do not put
+secrets in PR titles.
+
+After a group's first announcement, notes include merged PRs between its last
+announced commit and the current commit, not just the latest PR. For the first
+announcement only PRs merged at the deployed commit are considered, avoiding a
+dump of the entire repository history. Direct commits without associated merged
+PRs get a generic technical-update message. Reverting to an already announced
+SHA does not announce it again. A new group gets the current version on the
+next check. The runtime reads GitHub; there are no runtime GitHub write permissions.
+Public repositories need no GitHub token, but unauthenticated API rate limits
+can delay announcements; errors retry after the configured backoff.
+
+Persistent per-group/version receipts use the existing timed-tasks Cosmos
+container (`/chatId`) with `ttl: -1`, independently of message retention.
+Conditional writes and five-minute processing leases prevent concurrent sends.
+Notes/model failures before sending, and definite Telegram rejections, can retry.
+Before calling Telegram, the receipt is durably marked `sending`. An uncertain
+send or crash in that window is **not retried automatically**: avoiding duplicate
+group messages takes priority over guaranteed delivery. Check logs and the
+receipt's stage/message ID before manually recovering a missing announcement.
+Do not delete `sending` or `completed` receipts without checking the group first.
+Cosmos and Telegram cannot provide an atomic exactly-once transaction.
+
+No announcement is sent just because a build finishes: the code must actually
+run in the deployed app with the feature enabled. This is a startup/runtime
+notification, **not an overall deployment-health guarantee**. In deployment
+slots, keep `ReleaseAnnouncementsEnabled=false` in staging as a slot-sticky
+setting, and `true` only in the live slot. The later CD workflow must gate its
+activation/swap on health checks. Keep it disabled in local settings and use a
+separate test bot/group for any explicit live announcement test.
+
 ## 4. Enable manual CD from the fork
 
 The workflow builds all projects, runs offline tests, and packages the Function.

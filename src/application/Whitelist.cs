@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Linq;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
 
 namespace Ungerfall.ChatGpt.TelegramBot;
@@ -42,4 +43,6 @@ public class Whitelist : IWhitelist
     {
         return SystemRolesByChat.ContainsKey(chatId);
     }
+
+    public IEnumerable<long> GetAllowedGroupIds() => SystemRolesByChat.Keys.Where(id => id < 0);
 }

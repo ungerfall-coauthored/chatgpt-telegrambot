@@ -41,6 +41,7 @@ IHost host = Host.CreateDefaultBuilder(args)
                 });
 
         services.AddAzureOpenAi();
+        services.AddReleaseAnnouncements();
         services.AddAzureClients(c => c.AddServiceBusClient(context.Configuration["ServiceBusConnection"]));
         services.AddSingleton(sp =>
         {
@@ -72,6 +73,7 @@ IHost host = Host.CreateDefaultBuilder(args)
         services.AddSingleton<TestUsers>();
         services.AddScoped<UpdateHandler>();
         services.AddHostedService<PollingService>();
+        services.AddHostedService<ReleaseAnnouncementsService>();
     })
     .Build();
 
