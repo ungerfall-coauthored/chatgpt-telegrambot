@@ -19,6 +19,17 @@ public class ReleaseAnnouncementRepositoryTests
         Assert.Single(claims.OfType<ReleaseAnnouncementReceipt>());
     }
 
+    [Fact]
+    public async Task DeploymentApprovalIsPersistentIdempotentAndVersionSpecific()
+    {
+        var storage = new Storage();
+        Assert.False(await storage.Repository.IsDeploymentApproved(Version, default));
+        await storage.Repository.ApproveDeployment(Version, default);
+        await storage.Repository.ApproveDeployment(Version, default);
+        Assert.True(await storage.Repository.IsDeploymentApproved(Version, default));
+        Assert.False(await storage.Repository.IsDeploymentApproved(new string('b', 40), default));
+    }
+
     [Theory]
     [InlineData(ReleaseAnnouncementReceipt.Sending)]
     [InlineData(ReleaseAnnouncementReceipt.Completed)]
@@ -75,6 +86,7 @@ public class ReleaseAnnouncementRepositoryTests
     {
         private readonly object _gate = new();
         private readonly Dictionary<(string Id, string Partition), (ReleaseAnnouncementReceipt Document, string ETag)> _items = [];
+        private readonly Dictionary<string, ReleaseDeploymentApproval> _approvals = [];
         private readonly CosmosSystemTextJsonSerializer _serializer = new();
         public ReleaseAnnouncementRepository Repository { get; }
 
@@ -86,6 +98,26 @@ public class ReleaseAnnouncementRepositoryTests
             Repository = new ReleaseAnnouncementRepository(cosmos,
                 Options.Create(new CosmosDbOptions { DatabaseId = "db", TimedTasksContainerId = "tasks" }),
                 new ReleaseAnnouncementSettings());
+            container.ReadItemAsync<ReleaseDeploymentApproval>(Arg.Any<string>(), Arg.Any<PartitionKey>(),
+                Arg.Any<ItemRequestOptions>(), Arg.Any<CancellationToken>()).Returns(call =>
+                {
+                    if (!_approvals.TryGetValue(call.Arg<string>(), out var approval))
+                        throw Failure(HttpStatusCode.NotFound);
+                    Assert.Equal(new PartitionKey(0), call.Arg<PartitionKey>());
+                    var response = Substitute.For<ItemResponse<ReleaseDeploymentApproval>>();
+                    response.Resource.Returns(approval);
+                    return Task.FromResult(response);
+                });
+            container.CreateItemAsync(Arg.Any<ReleaseDeploymentApproval>(), Arg.Any<PartitionKey?>(),
+                Arg.Any<ItemRequestOptions>(), Arg.Any<CancellationToken>()).Returns(call =>
+                {
+                    var approval = call.Arg<ReleaseDeploymentApproval>();
+                    Assert.Equal<PartitionKey?>(new PartitionKey(0), call.Arg<PartitionKey?>());
+                    var copy = _serializer.FromStream<ReleaseDeploymentApproval>(_serializer.ToStream(approval));
+                    Assert.Equal(-1, copy.Ttl);
+                    if (!_approvals.TryAdd(copy.Id, copy)) throw Failure(HttpStatusCode.Conflict);
+                    return Task.FromResult(Substitute.For<ItemResponse<ReleaseDeploymentApproval>>());
+                });
             container.ReadItemAsync<ReleaseAnnouncementReceipt>(Arg.Any<string>(), Arg.Any<PartitionKey>(),
                 Arg.Any<ItemRequestOptions>(), Arg.Any<CancellationToken>()).Returns(call =>
                 {

@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Verify an isolated Flex target, then health-gate release announcements."""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+REPOSITORY = "ungerfall-coauthored/chatgpt-telegrambot"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError("Deployment endpoints must not redirect")
+
+
+def azure(*arguments):
+    result = subprocess.run(
+        ["az", *arguments, "--only-show-errors"],
+        capture_output=True, text=True, check=False, timeout=120,
+    )
+    if result.returncode:
+        # Azure errors can contain credentials or request details.
+        raise RuntimeError("Azure operation failed; check app-scoped OIDC permissions and portal configuration")
+    return result.stdout.strip()
+
+
+def context(environ=os.environ):
+    if environ.get("GITHUB_REPOSITORY") != REPOSITORY or environ.get("GITHUB_REF") != "refs/heads/master":
+        raise ValueError("Deployment is restricted to the fork's master branch")
+    sha = environ.get("GITHUB_SHA", "")
+    app = environ.get("AZURE_FUNCTIONAPP_NAME", "")
+    group = environ.get("AZURE_RESOURCE_GROUP", "")
+    if not re.fullmatch(r"[a-f0-9]{40}", sha):
+        raise ValueError("GITHUB_SHA must be a full deployed commit SHA")
+    if not re.fullmatch(r"fapp-coauthored-[a-z0-9-]+", app):
+        raise ValueError("Use a NEW isolated app named fapp-coauthored-...; the existing bot is not a deployment target")
+    if not re.fullmatch(r"rg-coauthored-[a-z0-9-]+", group):
+        raise ValueError("Use a dedicated resource group named rg-coauthored-...")
+    return app, group, sha
+
+
+def target(app, group):
+    data = json.loads(azure(
+        "functionapp", "show", "--name", app, "--resource-group", group,
+        "--query", "{name:name,resourceGroup:resourceGroup,host:defaultHostName,kind:kind,runtime:functionAppConfig.runtime}",
+        "--output", "json",
+    ))
+    runtime = data.get("runtime") or {}
+    host = data.get("host") or ""
+    if (data.get("name") != app or data.get("resourceGroup", "").lower() != group
+            or "functionapp" not in data.get("kind", "").lower()
+            or "linux" not in data.get("kind", "").lower()
+            or runtime.get("name") != "dotnet-isolated" or runtime.get("version") != "10.0"):
+        raise ValueError("Target must be the configured isolated Linux Flex Consumption app running .NET 10")
+    if (not re.fullmatch(r"[a-z0-9][a-z0-9.-]*\.azurewebsites\.net", host)
+            or not (host == app + ".azurewebsites.net" or host.startswith(app + "-"))):
+        raise ValueError("Azure returned an unexpected app hostname")
+    return "https://" + host
+
+
+def request(url, key=None):
+    headers = {"Accept": "application/json", "Cache-Control": "no-cache"}
+    if key:
+        headers["x-functions-key"] = key
+    req = urllib.request.Request(url, data=b"" if key else None, headers=headers)
+    with urllib.request.build_opener(NoRedirect()).open(req, timeout=15) as response:
+        body = response.read(65537)
+        if len(body) > 65536:
+            raise ValueError("Unexpectedly large deployment response")
+        return response.status, body
+
+
+def wait_for_health(url, sha, *, announcements=False, attempts=30, delay=10):
+    for attempt in range(attempts):
+        try:
+            status, body = request(f"{url}/api/health?deployment={sha}&attempt={attempt}")
+            data = json.loads(body)
+            if (isinstance(data, dict) and status == 200 and data.get("status") == "ready" and data.get("version") == sha
+                    and (not announcements or (
+                        data.get("announcementsEnabled") is True and data.get("requiresApproval") is True))):
+                return
+        except (urllib.error.URLError, OSError, ValueError, TypeError):
+            pass
+        if attempt + 1 < attempts:
+            time.sleep(delay)
+    raise RuntimeError("Health check did not confirm the expected artifact/configuration; release was NOT activated")
+
+
+def activate(app, group, sha, url):
+    wait_for_health(url, sha)
+    azure(
+        "functionapp", "config", "appsettings", "set", "--name", app, "--resource-group", group,
+        "--settings", "ReleaseAnnouncementsRequireApproval=true", "ReleaseAnnouncementsEnabled=true",
+        "--output", "none",
+    )
+    wait_for_health(url, sha, announcements=True)
+    key = azure(
+        "functionapp", "keys", "list", "--name", app, "--resource-group", group,
+        "--query", "functionKeys.default", "--output", "tsv",
+    )
+    if not key or key in ("None", "null") or "\n" in key or "\r" in key:
+        raise RuntimeError("No default Function key available; release was NOT activated")
+    print("::add-mask::" + key.replace("%", "%25"), flush=True)
+    status, _ = request(f"{url}/api/releases/{sha}/activate", key)
+    if status != 204:
+        raise RuntimeError("Release activation was not confirmed; inspect the deployment before retrying")
+    print(f"Healthy artifact {sha} activated; the bot timer will announce it without duplicate sends.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("phase", choices=("validate", "activate"))
+    args = parser.parse_args()
+    app, group, sha = context()
+    url = target(app, group)
+    if args.phase == "validate":
+        print(f"Verified isolated Flex target: {app}")
+    else:
+        activate(app, group, sha, url)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:
+        # Never echo HTTP bodies, subprocess stderr, keys, or exception URLs.
+        if isinstance(error, (ValueError, RuntimeError)):
+            print(f"Deployment failed: {error}", file=sys.stderr)
+        else:
+            print(f"Deployment failed ({type(error).__name__}); inspect Azure health and permissions", file=sys.stderr)
+        sys.exit(1)
