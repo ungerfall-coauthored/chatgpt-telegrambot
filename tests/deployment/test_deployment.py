@@ -3,8 +3,10 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 SPEC = importlib.util.spec_from_file_location(
     "deployment", Path(__file__).resolve().parents[2] / "scripts" / "azure" / "deployment.py"
@@ -26,6 +28,31 @@ def health(version=SHA, **values):
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_package_keeps_binding_files_at_zip_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "publish"
+            (source / ".azurefunctions").mkdir(parents=True)
+            (source / "host.json").write_text("{}")
+            (source / ".azurefunctions" / "binding.dll").write_bytes(b"test")
+            digest = deployment.package(source, root / "function.zip")
+            self.assertRegex(digest, r"^[a-f0-9]{64}$")
+            with zipfile.ZipFile(root / "function.zip") as archive:
+                self.assertEqual([".azurefunctions/binding.dll", "host.json"], archive.namelist())
+            (source / "local.settings.json").write_text('{"Values":{"SECRET":"test-only"}}')
+            with self.assertRaises(ValueError):
+                deployment.package(source, root / "unsafe.zip")
+            self.assertFalse((root / "unsafe.zip").exists())
+
+    def test_package_rejects_symbolic_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "publish"
+            (root / ".azurefunctions").mkdir(parents=True)
+            (root / "host.json").write_text("{}")
+            (root / "link").symlink_to(root / "host.json")
+            with self.assertRaises(ValueError):
+                deployment.package(root, root.parent / "unsafe.zip")
+
     def test_target_context_rejects_upstream_wrong_branch_and_existing_resources(self):
         valid = {
             "GITHUB_REPOSITORY": deployment.REPOSITORY, "GITHUB_REF": "refs/heads/master",

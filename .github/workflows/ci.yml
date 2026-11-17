@@ -41,11 +41,7 @@ jobs:
         run: dotnet publish src/presentation.azure-function/azure-function.csproj --configuration Release --no-restore -p:ContinuousIntegrationBuild=true -p:SourceRevisionId="$GITHUB_SHA" --output "$RUNNER_TEMP/function"
       - name: Package immutable deployment
         id: package
-        run: |
-          test ! -e "$RUNNER_TEMP/function/local.settings.json"
-          test -d "$RUNNER_TEMP/function/.azurefunctions"
-          (cd "$RUNNER_TEMP/function" && zip -q -r "$RUNNER_TEMP/function.zip" .)
-          echo "sha256=$(sha256sum "$RUNNER_TEMP/function.zip" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+        run: python3 scripts/azure/deployment.py package --source "$RUNNER_TEMP/function" --destination "$RUNNER_TEMP/function.zip"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: azure-function-${{ github.sha }}

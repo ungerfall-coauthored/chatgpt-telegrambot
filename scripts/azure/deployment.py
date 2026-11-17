@@ -2,16 +2,36 @@
 """Verify an isolated Flex target, then health-gate release announcements."""
 
 import argparse
+import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+import zipfile
 
 REPOSITORY = "ungerfall-coauthored/chatgpt-telegrambot"
+
+
+def package(source, destination):
+    source, destination = Path(source).resolve(), Path(destination).resolve()
+    if not (source / "host.json").is_file() or not (source / ".azurefunctions").is_dir():
+        raise ValueError("Publish output is missing host.json or hidden binding dependencies")
+    if destination.is_relative_to(source):
+        raise ValueError("Package destination must be outside the publish directory")
+    entries = sorted(source.rglob("*"))
+    if any(entry.is_symlink() or entry.name.lower() == "local.settings.json" for entry in entries):
+        raise ValueError("Refusing to package local settings or symbolic links")
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+        for entry in entries:
+            if entry.is_file():
+                archive.write(entry, entry.relative_to(source).as_posix())
+    with destination.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -115,8 +135,19 @@ def activate(app, group, sha, url):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("validate", "activate"))
+    parser.add_argument("phase", choices=("package", "validate", "activate"))
+    parser.add_argument("--source")
+    parser.add_argument("--destination")
     args = parser.parse_args()
+    if args.phase == "package":
+        if not args.source or not args.destination:
+            parser.error("package requires --source and --destination")
+        digest = package(args.source, args.destination)
+        if os.environ.get("GITHUB_OUTPUT"):
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                output.write(f"sha256={digest}\n")
+        print(f"Packaged Function SHA-256: {digest}")
+        return
     app, group, sha = context()
     url = target(app, group)
     if args.phase == "validate":
