@@ -75,8 +75,12 @@ class DeploymentTests(unittest.TestCase):
             "name": APP, "resourceGroup": GROUP, "defaultHostName": APP + "-unique.westeurope-01.azurewebsites.net",
             "kind": "functionapp,linux", "functionAppConfig": {"runtime": {"name": "dotnet-isolated", "version": "10.0"}},
         }
-        with patch.object(deployment, "azure", return_value=json.dumps(metadata)):
-            self.assertEqual("https://" + metadata["defaultHostName"], deployment.target(APP, GROUP))
+        for properties in (None, {}, {"unrelated": "value"}):
+            with self.subTest(properties=properties), patch.object(
+                deployment, "azure", return_value=json.dumps({**metadata, "properties": properties})
+            ) as azure:
+                self.assertEqual("https://" + metadata["defaultHostName"], deployment.target(APP, GROUP))
+                self.assertNotIn("--query", azure.call_args.args)
         nested = {
             key: value for key, value in metadata.items()
             if key not in ("defaultHostName", "functionAppConfig")
@@ -89,10 +93,25 @@ class DeploymentTests(unittest.TestCase):
         for update in (
             {"functionAppConfig": None},
             {"functionAppConfig": {"runtime": {"name": "dotnet-isolated", "version": "8.0"}}},
-            {"defaultHostName": "https://evil.example"}, {"defaultHostName": "other.azurewebsites.net"},
+            {"functionAppConfig": {"runtime": {"name": "dotnet", "version": "10.0"}}},
+            {"defaultHostName": None}, {"defaultHostName": "https://evil.example"},
+            {"defaultHostName": "other.azurewebsites.net"},
             {"defaultHostName": APP + ".azurewebsites.net.evil.example"},
         ):
             for response in ({**metadata, **update}, {**nested, "properties": {**nested["properties"], **update}}):
+                with self.subTest(update=update, nested="properties" in response), patch.object(
+                    deployment, "azure", return_value=json.dumps(response)
+                ), self.assertRaises(ValueError):
+                    deployment.target(APP, GROUP)
+            with self.subTest(update=update, nested_overrides_flat=True), patch.object(
+                deployment, "azure", return_value=json.dumps({**metadata, "properties": update})
+            ), self.assertRaises(ValueError):
+                deployment.target(APP, GROUP)
+        for update in (
+            {"name": "other-app"}, {"resourceGroup": "other-group"},
+            {"kind": "functionapp,windows"}, {"kind": "app,linux"},
+        ):
+            for response in ({**metadata, **update}, {**nested, **update}):
                 with self.subTest(update=update, nested="properties" in response), patch.object(
                     deployment, "azure", return_value=json.dumps(response)
                 ), self.assertRaises(ValueError):

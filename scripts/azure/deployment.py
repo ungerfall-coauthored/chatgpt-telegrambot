@@ -70,9 +70,9 @@ def target(app, group):
         "functionapp", "show", "--name", app, "--resource-group", group,
         "--output", "json",
     ))
-    properties = data.get("properties", data)
-    runtime = (properties.get("functionAppConfig") or {}).get("runtime") or {}
-    host = properties.get("defaultHostName") or ""
+    properties = data.get("properties") or {}
+    runtime = (properties.get("functionAppConfig", data.get("functionAppConfig")) or {}).get("runtime") or {}
+    host = properties.get("defaultHostName", data.get("defaultHostName")) or ""
     if (data.get("name") != DEPLOYMENT_APP or data.get("resourceGroup", "").lower() != DEPLOYMENT_GROUP
             or "functionapp" not in data.get("kind", "").lower()
             or "linux" not in data.get("kind", "").lower()
