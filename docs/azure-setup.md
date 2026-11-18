@@ -1,8 +1,10 @@
 # Azure setup and fork deployment
 
 This fork incorporates [the upstream change](https://github.com/Ungerfall/chatgpt-telegrambot/pull/17).
-Use **separate test resources and a separate Telegram bot**; never deploy this fork
-to the upstream Function App, queue, database, or bot.
+For an isolated test environment, use separate resources and a separate Telegram
+bot. The replacement procedure in section 3 instead targets only the approved
+fork-owned app and its existing resources and service bot. Never deploy this
+fork to the upstream Function App, queue, database, or bot.
 
 Visual Studio individual Azure credits are intended for development and testing,
 not production. Check the [subscription terms](https://learn.microsoft.com/azure/devtest/offer/quickstart-individual-credit),
