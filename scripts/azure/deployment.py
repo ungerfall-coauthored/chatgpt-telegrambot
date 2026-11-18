@@ -68,11 +68,11 @@ def context(environ=os.environ):
 def target(app, group):
     data = json.loads(azure(
         "functionapp", "show", "--name", app, "--resource-group", group,
-        "--query", "{name:name,resourceGroup:resourceGroup,host:defaultHostName,kind:kind,runtime:functionAppConfig.runtime}",
         "--output", "json",
     ))
-    runtime = data.get("runtime") or {}
-    host = data.get("host") or ""
+    properties = data.get("properties") or {}
+    runtime = (properties.get("functionAppConfig", data.get("functionAppConfig")) or {}).get("runtime") or {}
+    host = properties.get("defaultHostName", data.get("defaultHostName")) or ""
     if (data.get("name") != DEPLOYMENT_APP or data.get("resourceGroup", "").lower() != DEPLOYMENT_GROUP
             or "functionapp" not in data.get("kind", "").lower()
             or "linux" not in data.get("kind", "").lower()
