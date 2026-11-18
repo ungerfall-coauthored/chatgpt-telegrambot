@@ -285,8 +285,14 @@ This workflow never deploys the polling worker or upstream resources.
    GitHub Actions, organization `ungerfall-coauthored`, repository
    `chatgpt-telegrambot`, entity type **Environment**, name `fork-test`.
    Verify issuer `https://token.actions.githubusercontent.com`, audience
-   `api://AzureADTokenExchange`, and subject
-   `repo:ungerfall-coauthored/chatgpt-telegrambot:environment:fork-test`.
+   `api://AzureADTokenExchange`, and the exact subject reported by the
+   workflow's **Log in to Azure with OIDC** step. This fork uses the
+   immutable-ID subject
+   `repo:ungerfall-coauthored@351226014/chatgpt-telegrambot@1460148473:environment:fork-test`.
+   If the portal's GitHub template generates the legacy subject without
+   `@<ID>` components, use **Other issuer** to enter the exact subject instead.
+   A mismatch fails login with `AADSTS700213`; do not broaden the trust or
+   print the OIDC token when diagnosing it.
    There is no client secret or publish profile to generate.
 4. In the fork's **Settings > Environments > fork-test**, restrict deployment
    branches to selected branch `master`. Leave required reviewers off for
