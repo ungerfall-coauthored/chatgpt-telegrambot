@@ -167,13 +167,15 @@ letters during replacement.
    instances, and 2,048 MB instance memory. Linux legacy Consumption cannot
    host .NET 10. Reuse storage account `rgchatgptb4db` for host and deployment
    storage; preserve the storage security configuration.
-2. Carry forward only the required configuration from the old app:
-   `TELEGRAM_BOT_TOKEN`, `CosmosDatabase`, `CosmosDbConnectionString`,
-   `CosmosTelegramMessagesContainer`, `CosmosTimedTasksContainer`,
-   `ServiceBusConnection`, `AzureWebJobsStorage`, existing Application
-   Insights connection string, `QuizChats`, `TestUsers`, and the daily-chat
-   settings. Never copy `OPENAI_API_KEY`, `OPENAI_ORG`, the deprecated
-   `WEBSITE_RUN_FROM_PACKAGE`, or an obsolete Functions runtime setting.
+2. Carry forward the existing service-bot configuration that should remain
+   unchanged: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` (if customized),
+   `TestUsers`, `QuizChats`, `DailySummaryChats`, and any customized
+   `ConversationPolicyChats`. Also carry forward `CosmosDatabase`,
+   `CosmosDbConnectionString`, `CosmosTelegramMessagesContainer`,
+   `CosmosTimedTasksContainer`, `ServiceBusConnection`, `AzureWebJobsStorage`,
+   and the existing Application Insights connection string. Never copy
+   `OPENAI_API_KEY`, `OPENAI_ORG`, the deprecated `WEBSITE_RUN_FROM_PACKAGE`,
+   or an obsolete Functions runtime setting.
    Configure the `AZURE_OPENAI_*` values from your private local Functions
    settings; keep them private and do not put them in GitHub.
 3. Generate a new `TELEGRAM_WEBHOOK_SECRET` (letters, digits, underscore,
