@@ -15,8 +15,8 @@ deployment = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(deployment)
 
 SHA = "a" * 40
-APP = "fapp-coauthored-telegram-test"
-GROUP = "rg-coauthored-telegram-test"
+APP = deployment.DEPLOYMENT_APP
+GROUP = deployment.DEPLOYMENT_GROUP
 URL = f"https://{APP}.azurewebsites.net"
 
 
@@ -63,8 +63,9 @@ class DeploymentTests(unittest.TestCase):
             ("GITHUB_REPOSITORY", "Ungerfall/chatgpt-telegrambot"),
             ("GITHUB_REF", "refs/pull/5/merge"),
             ("GITHUB_SHA", "master"),
-            ("AZURE_FUNCTIONAPP_NAME", "fapp-upstream-telegram-webhook"),
+            ("AZURE_FUNCTIONAPP_NAME", "fapp-ungerfall-chatgpt-telegram-webhook"),
             ("AZURE_RESOURCE_GROUP", "rg-upstream"),
+            ("AZURE_RESOURCE_GROUP", "rg-coauthored-telegram-test"),
         ):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 deployment.context({**valid, field: value})

@@ -15,6 +15,8 @@ import urllib.request
 import zipfile
 
 REPOSITORY = "ungerfall-coauthored/chatgpt-telegrambot"
+DEPLOYMENT_APP = "fapp-ungerfall-chatgpt-telegram-flex"
+DEPLOYMENT_GROUP = "rg-chatgpt"
 
 
 def package(source, destination):
@@ -58,10 +60,8 @@ def context(environ=os.environ):
     group = environ.get("AZURE_RESOURCE_GROUP", "")
     if not re.fullmatch(r"[a-f0-9]{40}", sha):
         raise ValueError("GITHUB_SHA must be a full deployed commit SHA")
-    if not re.fullmatch(r"fapp-coauthored-[a-z0-9-]+", app):
-        raise ValueError("Use a NEW isolated app named fapp-coauthored-...; the existing bot is not a deployment target")
-    if not re.fullmatch(r"rg-coauthored-[a-z0-9-]+", group):
-        raise ValueError("Use a dedicated resource group named rg-coauthored-...")
+    if app != DEPLOYMENT_APP or group != DEPLOYMENT_GROUP:
+        raise ValueError("Deployment is restricted to the approved replacement app in rg-chatgpt")
     return app, group, sha
 
 
@@ -73,7 +73,7 @@ def target(app, group):
     ))
     runtime = data.get("runtime") or {}
     host = data.get("host") or ""
-    if (data.get("name") != app or data.get("resourceGroup", "").lower() != group
+    if (data.get("name") != DEPLOYMENT_APP or data.get("resourceGroup", "").lower() != DEPLOYMENT_GROUP
             or "functionapp" not in data.get("kind", "").lower()
             or "linux" not in data.get("kind", "").lower()
             or runtime.get("name") != "dotnet-isolated" or runtime.get("version") != "10.0"):
