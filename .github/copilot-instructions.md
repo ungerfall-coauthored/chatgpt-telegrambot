@@ -1,1 +1,1 @@
-Follow AGENTS.md and agent/rules/coauthor-isolation.md.
+Follow AGENTS.md and .agents/rules/coauthor-isolation.md.

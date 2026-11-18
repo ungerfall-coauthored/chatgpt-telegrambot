@@ -1,1 +1,1 @@
-Read AGENTS.md and agent/rules/*.md before making changes.
+Read AGENTS.md and .agents/rules/*.md before making changes.
