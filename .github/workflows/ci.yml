@@ -102,6 +102,12 @@ jobs:
           AZURE_FUNCTIONAPP_NAME: ${{ vars.AZURE_FUNCTIONAPP_NAME }}
           AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
         run: python3 scripts/azure/deployment.py validate
+      - name: Apply reviewed conversation policy
+        if: steps.current.outputs.deploy == 'true'
+        env:
+          AZURE_FUNCTIONAPP_NAME: ${{ vars.AZURE_FUNCTIONAPP_NAME }}
+          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: python3 scripts/azure/deployment.py configure
       - name: Deploy fork Function App
         if: steps.current.outputs.deploy == 'true'
         uses: Azure/functions-action@c5060b3b8bb1ebbcb531abd00c822ecbaa8ea656 # v1.5.7
