@@ -42,10 +42,73 @@ budget and alerts. Alerts are not a hard spending cap.
 | `AZURE_OPENAI_IMAGE_API_VERSION` | Optional; defaults to `2025-04-01-preview` |
 
 Use models compatible with the request parameters and the chosen API versions.
-See the request settings below before switching model families. The optional upstream Decisions feature
-is a **separate OpenAI API** integration, not Azure: leave `DECISIONS_API_KEY`
-unset and `DecisionsEnabled`, `ContinuationEnabled`, and `AutonomousEnabled`
-false unless you deliberately configure and accept that separate service.
+See the request settings below before switching model families. Optional
+no-mention replies use a separate **Microsoft-Decision-1.1** deployment in
+Foundry, described below. They do not call the public OpenAI API.
+
+### Optional reply decisions: Microsoft-Decision-1.1
+
+Deploy **Microsoft-Decision-1.1**, not a generative chat model, from the Foundry
+model catalog. It returns numerical decisions without generating prose. Prefer
+**Data Zone Standard** in a European data zone close to the West Europe bot
+when available; **Global Standard** is also supported. Deployment type alone
+does not guarantee latency: measure representative chat examples before enabling
+the feature. Availability, quota, and Visual Studio subscription eligibility
+must be checked in the portal.
+
+Copy the **resource endpoint**, **deployment name**, and **resource API key**
+from the deployment details page. Keep them separate from the chat/image
+settings, even if the deployments share a Foundry resource.
+
+| Setting | Meaning |
+| --- | --- |
+| `AZURE_DECISIONS_ENDPOINT` | HTTPS resource root, e.g. `https://NAME.services.ai.azure.com/`; no project or API path |
+| `AZURE_DECISIONS_DEPLOYMENT` | Your Microsoft-Decision-1.1 deployment name, e.g. `bot-decisions` |
+| `AZURE_DECISIONS_API_KEY` | Key belonging to that resource; never an OpenAI platform key |
+
+Set all three, or leave all three unset to disable the integration. Partial
+configuration fails validation. Remove the obsolete `DECISIONS_API_KEY`; it
+is no longer read. Existing `AZURE_OPENAI_*` settings remain unchanged.
+
+The client uses `POST /providers/microsoft/v1/systemone`, named `noul`
+questions, and `answers.<question>.noul` probabilities. It does not use
+`/openai/v1/decisions`, Chat Completions, or `AZURE_OPENAI_API_VERSION`.
+See [Microsoft's model/API guide](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision).
+
+For local Functions, add the following inside **`Values`** in the existing,
+git-ignored **`src/presentation.azure-function/local.settings.json`** (not
+`settings.local.json`), replacing placeholders privately:
+
+```json
+{
+  "AZURE_DECISIONS_ENDPOINT": "https://YOUR-RESOURCE.services.ai.azure.com/",
+  "AZURE_DECISIONS_DEPLOYMENT": "bot-decisions",
+  "AZURE_DECISIONS_API_KEY": "YOUR-RESOURCE-KEY"
+}
+```
+
+These settings do not enable unprompted replies. `ConversationPolicyChats`
+remains an opt-in JSON dictionary keyed by group ID. For example, enabling
+**continuations only** for a test group is this single string setting:
+
+```json
+{
+  "ConversationPolicyChats": "{\"-1001234567890\":{\"DecisionsEnabled\":true,\"ContinuationEnabled\":true,\"AutonomousEnabled\":false}}"
+}
+```
+
+`ContinuationEnabled` permits recent follow-ups without an `@mention`;
+`AutonomousEnabled` separately permits occasional unsolicited interjections.
+Both require `DecisionsEnabled=true`. Existing sampling, cooldowns, daily
+budgets, and `MinProbability` checks remain in force. Missing configuration,
+invalid/refused answers, API failures, and the three-second request timeout
+all leave the bot silent. Evaluate false positives and latency before changing
+real group flags. Do not run a local consumer against the deployed bot's
+production queues.
+
+Local settings are not deployed. For the hosted bot, configure the three keys
+and any deliberate group opt-ins in the Function App's environment variables
+or Key Vault references; never in GitHub Actions secrets.
 
 ### Context windows, request budgets, and model compatibility
 
@@ -137,6 +200,21 @@ unset AZURE_OPENAI_API_KEY AZURE_OPENAI_LIVE_TEST
 The test makes one short paid request for each chat/summary profile, even when
 they use the same deployment, and, if configured, one paid image request.
 It uses the configured temperatures, completion limits, and API version.
+If all three `AZURE_DECISIONS_*` settings are exported, a separate test also
+makes one paid Microsoft Decision request and validates the numerical response.
+To test only that deployment without chat/image charges, export those three
+settings privately and run:
+
+```bash
+AZURE_OPENAI_LIVE_TEST=1 dotnet test \
+  tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj \
+  -c Release --filter 'FullyQualifiedName~DecisionsDeploymentReturnsNoulProbabilities'
+```
+
+`dotnet test` does not load `local.settings.json` automatically. The live
+Decision test allows 15 seconds for provisioning/warm-up diagnostics; the
+bot's actual decision timeout remains three seconds.
+
 It does not test Telegram or Cosmos DB or validate a full-size context request.
 Failures can mean key, networking, quota, deployment, model, or API-version
 incompatibility. Never paste the key or a connection string into logs or chat.

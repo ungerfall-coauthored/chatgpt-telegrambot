@@ -41,6 +41,7 @@ IHost host = Host.CreateDefaultBuilder(args)
                 });
 
         services.AddAzureOpenAi();
+        services.AddAzureDecisions();
         services.AddReleaseAnnouncements();
         services.AddAzureClients(c => c.AddServiceBusClient(context.Configuration["ServiceBusConnection"]));
         services.AddSingleton(sp =>
@@ -57,7 +58,6 @@ IHost host = Host.CreateDefaultBuilder(args)
         services.AddScoped<ITelegramMessageRepository, TelegramMessageRepository>();
         services.AddScoped<IConversationRepository, ConversationRepository>();
         services.AddScoped<ConversationPolicy>();
-        services.AddHttpClient<DecisionsClient>(client => client.MaxResponseContentBufferSize = 32768);
         services.AddSingleton<ConversationPolicyChats>();
         services.AddScoped<PollingUpdateHandler>();
         services.AddScoped<ReceiverService>();

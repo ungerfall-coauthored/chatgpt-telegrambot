@@ -54,7 +54,7 @@ public class UpdateHandlerTest
             new GenerateImage(new ImageOpenAiClient(openAiServiceMock), Substitute.For<ILogger<GenerateImage>>(), botClientMock),
             new TestUsers(), conversationRepoMock,
             new ConversationPolicy(conversationRepoMock, new ConversationPolicyChats(), Substitute.For<ILogger<ConversationPolicy>>(),
-                new DecisionsClient(new HttpClient(), Substitute.For<ILogger<DecisionsClient>>())),
+                new DecisionsClient(new HttpClient(), Substitute.For<ILogger<DecisionsClient>>(), new AzureDecisionsSettings())),
             new PersonalSettings(botClientMock, Substitute.For<ILogger<PersonalSettings>>(), TestAzureSettings.Create()),
             TestAzureSettings.Create());
 
@@ -130,7 +130,7 @@ public class UpdateHandlerTest
             new GenerateImage(new ImageOpenAiClient(openAiServiceMock), Substitute.For<ILogger<GenerateImage>>(), botClientMock),
             new TestUsers(), conversationRepoMock,
             new ConversationPolicy(conversationRepoMock, new ConversationPolicyChats(), Substitute.For<ILogger<ConversationPolicy>>(),
-                new DecisionsClient(new HttpClient(), Substitute.For<ILogger<DecisionsClient>>())),
+                new DecisionsClient(new HttpClient(), Substitute.For<ILogger<DecisionsClient>>(), new AzureDecisionsSettings())),
             new PersonalSettings(botClientMock, Substitute.For<ILogger<PersonalSettings>>(), TestAzureSettings.Create()),
             TestAzureSettings.Create());
 
