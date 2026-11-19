@@ -8,8 +8,38 @@ using Ungerfall.ChatGpt.TelegramBot.Configuration;
 namespace Ungerfall.ChatGpt.TelegramBot.Tests.Integration;
 
 [Trait("Category", "Integration")]
+[Collection("Conversation policy environment")]
 public class AzureOpenAiLiveTests
 {
+    [SkippableFact]
+    public async Task DecisionPolicyDoesNotAnswerMereBotDiscussion()
+    {
+        Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");
+        var settings = AzureDecisionsSettings.FromEnvironment();
+        Skip.IfNot(settings.IsConfigured, "Azure Decisions deployment is not configured");
+        using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+        using var scenario = new NaturalRequestScenario(new DecisionsClient(http, NullLogger<DecisionsClient>.Instance, settings));
+
+        await scenario.Handler.Handle(scenario.Update(1, "Мы вчера обсуждали бота, но сейчас разговариваем между собой."), default);
+
+        Assert.Equal(1, scenario.Budget.Decisions);
+        await scenario.AssertNoReply();
+    }
+
+    [SkippableFact]
+    public async Task DecisionPolicyAnswersRussianBotRequestAfterHumanInterruption()
+    {
+        Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");
+        var settings = AzureDecisionsSettings.FromEnvironment();
+        Skip.IfNot(settings.IsConfigured, "Azure Decisions deployment is not configured");
+        using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+        using var scenario = new NaturalRequestScenario(new DecisionsClient(http, NullLogger<DecisionsClient>.Instance, settings));
+
+        await scenario.Run();
+
+        await scenario.AssertOneReply();
+    }
+
     [SkippableFact]
     public async Task DecisionClientAcceptsAnExplicitContinuation()
     {
