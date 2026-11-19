@@ -34,6 +34,7 @@ namespace Ungerfall.ChatGpt.TelegramBot.AzureFunction
                    s.AddHttpClient("tgclient")
                        .AddTypedClient<ITelegramBotClient>(httpClient => new TelegramBotClient(tgToken, httpClient));
                    s.AddAzureOpenAi();
+                   s.AddAzureDecisions();
                    s.AddReleaseAnnouncements();
                    s.Configure<CosmosDbOptions>(opt =>
                    {
@@ -73,7 +74,6 @@ namespace Ungerfall.ChatGpt.TelegramBot.AzureFunction
                    s.AddScoped<ITelegramMessageRepository, TelegramMessageRepository>();
                    s.AddScoped<IConversationRepository, ConversationRepository>();
                    s.AddScoped<ConversationPolicy>();
-                   s.AddHttpClient<DecisionsClient>(client => client.MaxResponseContentBufferSize = 32768);
                    s.AddSingleton<ConversationPolicyChats>();
                    s.AddScoped<ITimedTaskExecutionRepository, TimedTaskExecutionRepository>();
                    s.AddScoped<ITokenCounter, TokenCounter>();
