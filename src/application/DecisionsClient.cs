@@ -55,6 +55,8 @@ public class DecisionsClient
             timeout.CancelAfter(TimeSpan.FromSeconds(3));
             using var request = _settings.CreateRequest();
             request.Content = JsonContent.Create(new { model = _settings.Deployment, state = input, questions });
+            // Foundry requires Content-Length rather than JsonContent's default chunked transfer.
+            await request.Content.LoadIntoBufferAsync(128 * 1024, timeout.Token);
             using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
             if (!response.IsSuccessStatusCode)
             {

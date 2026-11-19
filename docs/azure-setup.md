@@ -200,20 +200,22 @@ unset AZURE_OPENAI_API_KEY AZURE_OPENAI_LIVE_TEST
 The test makes one short paid request for each chat/summary profile, even when
 they use the same deployment, and, if configured, one paid image request.
 It uses the configured temperatures, completion limits, and API version.
-If all three `AZURE_DECISIONS_*` settings are exported, a separate test also
-makes one paid Microsoft Decision request and validates the numerical response.
+If all three `AZURE_DECISIONS_*` settings are exported, two separate tests each
+make one paid Microsoft Decision request: a numerical-response probe and an
+explicit-continuation check through the production `DecisionsClient`.
 To test only that deployment without chat/image charges, export those three
 settings privately and run:
 
 ```bash
 AZURE_OPENAI_LIVE_TEST=1 dotnet test \
   tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj \
-  -c Release --filter 'FullyQualifiedName~DecisionsDeploymentReturnsNoulProbabilities'
+  -c Release --filter 'Category=Integration&FullyQualifiedName~AzureOpenAiLiveTests.Decision'
 ```
 
-`dotnet test` does not load `local.settings.json` automatically. The live
-Decision test allows 15 seconds for provisioning/warm-up diagnostics; the
-bot's actual decision timeout remains three seconds.
+`dotnet test` does not load `local.settings.json` automatically. Confirm both
+Decision tests execute and pass, with none skipped. The numerical probe allows
+15 seconds for provisioning/warm-up diagnostics; the production-client test
+uses the bot's actual three-second timeout and 0.95 probability threshold.
 
 It does not test Telegram or Cosmos DB or validate a full-size context request.
 Failures can mean key, networking, quota, deployment, model, or API-version
