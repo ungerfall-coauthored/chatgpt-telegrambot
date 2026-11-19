@@ -49,6 +49,27 @@ public class NaturalRequestTests
         await scenario.AssertOneReply();
     }
 
+    [Fact]
+    public async Task NaturalRequestUsesDirectRequestDecisionDuringContinuationWindow()
+    {
+        var transport = new DecisionTransport(.99);
+        using var http = new HttpClient(transport);
+        using var scenario = new NaturalRequestScenario(new DecisionsClient(http, NullLogger<DecisionsClient>.Instance,
+            new AzureDecisionsSettings("https://example.services.ai.azure.com/", "test-key", "decisions")),
+            new ConversationPolicyOptions { DecisionsEnabled = true, NaturalRequestsEnabled = true, ContinuationEnabled = true });
+        scenario.State.UserId = 1;
+        scenario.State.ExpiresUtc = DateTime.UtcNow.AddMinutes(1);
+        scenario.State.RemainingCandidates = 1;
+
+        await scenario.Handler.Handle(scenario.Update(3, NaturalRequestScenario.BotRequest), default);
+
+        Assert.Equal(1, transport.Calls);
+        Assert.Contains("explicitly requests an answer", transport.Body);
+        await scenario.Bot.Received(1).SendRequest<Message>(
+            Arg.Is<SendRichMessageRequest>(request => request.ReplyParameters != null && request.ReplyParameters.MessageId == 3),
+            Arg.Any<CancellationToken>());
+    }
+
     [Theory]
     [InlineData(false, true, 0)]
     [InlineData(true, false, 0)]

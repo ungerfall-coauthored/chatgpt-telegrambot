@@ -65,7 +65,7 @@ public class ConversationPolicy
         for (var attempt = 0; attempt < 3; attempt++)
         {
             var state = await _repository.Get(message.Chat.Id, message.MessageThreadId ?? 0, cancellation);
-            var continuation = options.ContinuationEnabled && !state.AutonomousPending
+            var continuation = !naturalRequest && options.ContinuationEnabled && !state.AutonomousPending
                 && state.UserId == message.From.Id && state.ExpiresUtc > now && state.RemainingCandidates > 0;
             var interjection = !continuation && !naturalRequest;
             if (interjection && (!options.AutonomousEnabled || state.AutonomousPending
