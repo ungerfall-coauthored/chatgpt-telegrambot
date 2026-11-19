@@ -29,6 +29,7 @@ public class DecisionsClientTests
         Assert.Equal("https://example.services.ai.azure.com/providers/microsoft/v1/systemone", handler.Uri);
         Assert.Equal("test-key", handler.ApiKey);
         Assert.Null(handler.Authorization);
+        Assert.Equal((long)Encoding.UTF8.GetByteCount(handler.Body!), handler.ContentLength);
         using var body = JsonDocument.Parse(handler.Body!);
         Assert.Equal("reply-decisions", body.RootElement.GetProperty("model").GetString());
         Assert.Equal(input, body.RootElement.GetProperty("state").GetString());
@@ -158,6 +159,7 @@ public class DecisionsClientTests
         public string? ApiKey { get; private set; }
         public string? Authorization { get; private set; }
         public string? Body { get; private set; }
+        public long? ContentLength { get; private set; }
         public int Calls { get; private set; }
         public Func<CancellationToken, Task>? BeforeSend { get; init; }
 
@@ -167,6 +169,7 @@ public class DecisionsClientTests
             Uri = request.RequestUri!.ToString();
             ApiKey = request.Headers.GetValues("api-key").Single();
             Authorization = request.Headers.Authorization?.ToString();
+            ContentLength = request.Content!.Headers.ContentLength;
             Body = await request.Content!.ReadAsStringAsync(cancellationToken);
             if (BeforeSend != null) await BeforeSend(cancellationToken);
             return new HttpResponseMessage(status) { Content = new StringContent(response, Encoding.UTF8, "application/json") };

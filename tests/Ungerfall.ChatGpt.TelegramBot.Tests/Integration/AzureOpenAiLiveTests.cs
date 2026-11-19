@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using OpenAI.Managers;
 using OpenAI.ObjectModels.RequestModels;
 using System.Net.Http.Json;
@@ -9,6 +10,28 @@ namespace Ungerfall.ChatGpt.TelegramBot.Tests.Integration;
 [Trait("Category", "Integration")]
 public class AzureOpenAiLiveTests
 {
+    [SkippableFact]
+    public async Task DecisionClientAcceptsAnExplicitContinuation()
+    {
+        Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");
+        var settings = AzureDecisionsSettings.FromEnvironment();
+        Skip.IfNot(settings.IsConfigured, "Azure Decisions deployment is not configured");
+        using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+        var client = new DecisionsClient(http, NullLogger<DecisionsClient>.Instance, settings);
+        var input = JsonSerializer.Serialize(new
+        {
+            context = new[]
+            {
+                new { speaker = "current_user", text = "Please explain how to multiply two fractions." },
+                new { speaker = "bot", text = "Multiply the numerators and multiply the denominators. Would you like a worked example?" },
+            },
+            latest = "Yes, please show me the worked example you just offered.",
+        });
+
+        Assert.True(await client.ShouldReply(input, autonomous: false, minProbability: .95, default),
+            "Expected the production client to approve an explicit continuation within its three-second timeout");
+    }
+
     [SkippableFact]
     public async Task DecisionsDeploymentReturnsNoulProbabilities()
     {
@@ -31,6 +54,7 @@ public class AzureOpenAiLiveTests
                 mentions_red = new { type = "noul", instructions = "Does the input mention red?" },
             },
         });
+        await request.Content.LoadIntoBufferAsync(128 * 1024);
 
         using var response = await http.SendAsync(request);
         Assert.True(response.IsSuccessStatusCode, $"Azure Decisions failed: HTTP {(int)response.StatusCode}");
