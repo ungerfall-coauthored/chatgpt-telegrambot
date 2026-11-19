@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       package-sha256: ${{ steps.package.outputs.sha256 }}
+      announcer-sha256: ${{ steps.announcer.outputs.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,10 +43,18 @@ jobs:
       - name: Package immutable deployment
         id: package
         run: python3 scripts/azure/deployment.py package --source "$RUNNER_TEMP/function" --destination "$RUNNER_TEMP/function.zip"
+      - name: Publish one-shot release announcer
+        id: announcer
+        run: |
+          dotnet publish src/presentation.release-announcer/release-announcer.csproj --configuration Release --no-restore -p:ContinuousIntegrationBuild=true -p:SourceRevisionId="$GITHUB_SHA" --output "$RUNNER_TEMP/announcer"
+          tar -C "$RUNNER_TEMP/announcer" -czf "$RUNNER_TEMP/announcer.tar.gz" .
+          echo "sha256=$(sha256sum "$RUNNER_TEMP/announcer.tar.gz" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: azure-function-${{ github.sha }}
-          path: ${{ runner.temp }}/function.zip
+          path: |
+            ${{ runner.temp }}/function.zip
+            ${{ runner.temp }}/announcer.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -60,6 +69,7 @@ jobs:
     environment: fork-test
     permissions:
       contents: read
+      pull-requests: read
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,9 +96,14 @@ jobs:
         if: steps.current.outputs.deploy == 'true'
         env:
           EXPECTED_SHA256: ${{ needs.build.outputs.package-sha256 }}
+          ANNOUNCER_SHA256: ${{ needs.build.outputs.announcer-sha256 }}
         run: |
           [[ "$EXPECTED_SHA256" =~ ^[a-f0-9]{64}$ ]]
           printf '%s  %s\n' "$EXPECTED_SHA256" "$RUNNER_TEMP/package/function.zip" | sha256sum --check -
+          [[ "$ANNOUNCER_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          printf '%s  %s\n' "$ANNOUNCER_SHA256" "$RUNNER_TEMP/package/announcer.tar.gz" | sha256sum --check -
+          mkdir "$RUNNER_TEMP/announcer"
+          tar -xzf "$RUNNER_TEMP/package/announcer.tar.gz" -C "$RUNNER_TEMP/announcer"
       - name: Log in to Azure with OIDC
         if: steps.current.outputs.deploy == 'true'
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
@@ -96,7 +111,7 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Verify isolated Flex target
+      - name: Verify isolated Flex target and release settings
         if: steps.current.outputs.deploy == 'true'
         env:
           AZURE_FUNCTIONAPP_NAME: ${{ vars.AZURE_FUNCTIONAPP_NAME }}
@@ -116,12 +131,17 @@ jobs:
           package: ${{ runner.temp }}/package/function.zip
           sku: flexconsumption
           remote-build: false
-      - name: Verify running SHA and activate announcements
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        if: steps.current.outputs.deploy == 'true'
+        with:
+          global-json-file: global.json
+      - name: Deliver release announcement
         if: steps.current.outputs.deploy == 'true'
         env:
           AZURE_FUNCTIONAPP_NAME: ${{ vars.AZURE_FUNCTIONAPP_NAME }}
           AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-        run: python3 scripts/azure/deployment.py activate
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/azure/deployment.py announce --runner "$RUNNER_TEMP/announcer/release-announcer.dll"
       - name: Report deployment
         if: always() && steps.current.outputs.deploy == 'true'
         env:

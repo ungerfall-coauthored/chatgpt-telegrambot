@@ -117,12 +117,12 @@ class DeploymentTests(unittest.TestCase):
                 ), self.assertRaises(ValueError):
                     deployment.target(APP, GROUP)
 
-    def test_health_requires_exact_artifact_and_gate_configuration(self):
+    def test_health_requires_exact_artifact(self):
         with patch.object(deployment, "request", side_effect=[
-            health("b" * 40), health(requiresApproval=False), (200, b"[]"), health()
+            health("b" * 40), (200, b"[]"), health()
         ]) as request:
-            deployment.wait_for_health(URL, SHA, announcements=True, attempts=4, delay=0)
-        self.assertEqual(4, request.call_count)
+            deployment.wait_for_health(URL, SHA, attempts=3, delay=0)
+        self.assertEqual(3, request.call_count)
 
     def test_managed_policy_merges_only_reviewed_flags_and_verifies_without_touching_keys(self):
         desired = {"-123": {"DecisionsEnabled": True, "NaturalRequestsEnabled": True, "AutonomousEnabled": False}}
@@ -174,49 +174,62 @@ class DeploymentTests(unittest.TestCase):
                 patch.object(deployment, "azure", side_effect=["[]", "", "[]"]), self.assertRaises(RuntimeError):
             deployment.configure_conversation_policy(APP, GROUP)
 
-    def test_unhealthy_artifact_never_changes_settings_or_activates(self):
+    def test_unhealthy_artifact_never_reads_keys_or_runs_announcer(self):
         with patch.object(deployment, "wait_for_health", side_effect=RuntimeError("unhealthy")), \
-                patch.object(deployment, "azure") as azure, patch.object(deployment, "request") as request:
+                patch.object(deployment, "azure") as azure, patch.object(deployment.subprocess, "run") as run:
             with self.assertRaises(RuntimeError):
-                deployment.activate(APP, GROUP, SHA, URL)
+                deployment.announce(APP, GROUP, SHA, URL, "release-announcer.dll")
         azure.assert_not_called()
-        request.assert_not_called()
+        run.assert_not_called()
 
-    def test_unhealthy_restarted_configuration_never_fetches_key_or_activates(self):
-        with patch.object(deployment, "wait_for_health", side_effect=[None, RuntimeError("unhealthy")]), \
-                patch.object(deployment, "azure") as azure, patch.object(deployment, "request") as request:
-            with self.assertRaises(RuntimeError):
-                deployment.activate(APP, GROUP, SHA, URL)
-        azure.assert_called_once()
-        self.assertIn("appsettings", azure.call_args.args)
-        request.assert_not_called()
-
-    def test_activation_occurs_only_after_health_and_keeps_key_out_of_urls_and_cli(self):
+    def test_one_shot_runner_uses_existing_hosted_keys_only_in_environment_and_propagates_failure(self):
         events = []
-        key = "test-function-key-that-must-not-leak"
+        hosted = {
+            "AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com/",
+            "AZURE_OPENAI_API_KEY": "test-existing-azure-key",
+            "AZURE_OPENAI_CHAT_DEPLOYMENT": "chat",
+            "AZURE_OPENAI_SUMMARY_DEPLOYMENT": "summary",
+            "CosmosDbConnectionString": "private-cosmos",
+            "CosmosDatabase": "db", "CosmosTimedTasksContainer": "tasks",
+            "TELEGRAM_BOT_TOKEN": "private-telegram", "ServiceBusConnection": "not-needed",
+            "GITHUB_SHA": "malicious-hosted-override",
+        }
 
-        def azure(*args):
-            events.append("key" if "keys" in args else "settings")
-            return key if "keys" in args else ""
+        def settings(*args):
+            events.append("settings")
+            return json.dumps([{"name": name, "value": value} for name, value in hosted.items()])
 
-        def ready(*args, **kwargs):
-            events.append("health-with-gate" if kwargs.get("announcements") else "health")
+        for returncode in (0, 1):
+            events.clear()
+            with tempfile.TemporaryDirectory() as directory:
+                runner = Path(directory) / "release-announcer.dll"
+                runner.touch()
+                with patch.dict(deployment.os.environ, {"GITHUB_TOKEN": "pipeline-token", "GITHUB_SHA": SHA}), \
+                        patch.object(deployment, "wait_for_health", side_effect=lambda *a: events.append("health")), \
+                        patch.object(deployment, "azure", side_effect=settings) as cli, \
+                        patch.object(deployment.subprocess, "run") as run, contextlib.redirect_stdout(io.StringIO()):
+                    run.return_value.returncode = returncode
+                    run.return_value.stdout = ""
+                    run.return_value.stderr = ""
+                    if returncode:
+                        with self.assertRaises(RuntimeError):
+                            deployment.announce(APP, GROUP, SHA, URL, runner)
+                    else:
+                        deployment.announce(APP, GROUP, SHA, URL, runner)
+                    self.assertEqual(["health", "settings"], events)
+                    run.assert_called_once()
+                    self.assertEqual(["dotnet", str(runner)], run.call_args.args[0])
+                    self.assertEqual(hosted["AZURE_OPENAI_API_KEY"], run.call_args.kwargs["env"]["AZURE_OPENAI_API_KEY"])
+                    self.assertEqual("pipeline-token", run.call_args.kwargs["env"]["GITHUB_TOKEN"])
+                    self.assertEqual(SHA, run.call_args.kwargs["env"]["GITHUB_SHA"])
+                    self.assertNotIn("ServiceBusConnection", run.call_args.kwargs["env"])
+                    self.assertNotIn(hosted["AZURE_OPENAI_API_KEY"], repr(cli.call_args_list) + repr(run.call_args.args))
 
-        def activate(url, supplied_key=None):
-            events.append("activate")
-            self.assertEqual(f"{URL}/api/releases/{SHA}/activate", url)
-            self.assertEqual(key, supplied_key)
-            self.assertNotIn(key, url)
-            return 204, b""
-
-        output = io.StringIO()
-        with patch.object(deployment, "azure", side_effect=azure) as cli, \
-                patch.object(deployment, "wait_for_health", side_effect=ready), \
-                patch.object(deployment, "request", side_effect=activate), contextlib.redirect_stdout(output):
-            deployment.activate(APP, GROUP, SHA, URL)
-        self.assertEqual(["health", "settings", "health-with-gate", "key", "activate"], events)
-        self.assertTrue(output.getvalue().startswith("::add-mask::" + key))
-        self.assertNotIn(key, repr(cli.call_args_list))
+    def test_missing_hosted_configuration_never_launches_announcer(self):
+        with patch.object(deployment, "wait_for_health"), patch.object(deployment, "azure", return_value="[]"), \
+                patch.object(deployment.subprocess, "run") as run, self.assertRaises(RuntimeError):
+            deployment.announce(APP, GROUP, SHA, URL, "release-announcer.dll")
+        run.assert_not_called()
 
     def test_health_timeout_and_redirects_fail_closed(self):
         with patch.object(deployment, "request", return_value=health("b" * 40)), self.assertRaises(RuntimeError):

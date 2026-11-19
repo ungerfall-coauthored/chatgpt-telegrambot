@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify an isolated Flex target, then health-gate release announcements."""
+"""Verify an isolated Flex target, then run one-shot pipeline announcements."""
 
 import argparse
 import hashlib
@@ -85,11 +85,9 @@ def target(app, group):
     return "https://" + host
 
 
-def request(url, key=None):
+def request(url):
     headers = {"Accept": "application/json", "Cache-Control": "no-cache"}
-    if key:
-        headers["x-functions-key"] = key
-    req = urllib.request.Request(url, data=b"" if key else None, headers=headers)
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.build_opener(NoRedirect()).open(req, timeout=15) as response:
         body = response.read(65537)
         if len(body) > 65536:
@@ -138,14 +136,12 @@ def configure_conversation_policy(app, group):
     print(f"Verified managed conversation policy for {len(desired)} group(s); credentials were not changed.")
 
 
-def wait_for_health(url, sha, *, announcements=False, attempts=30, delay=10):
+def wait_for_health(url, sha, *, attempts=30, delay=10):
     for attempt in range(attempts):
         try:
             status, body = request(f"{url}/api/health?deployment={sha}&attempt={attempt}")
             data = json.loads(body)
-            if (isinstance(data, dict) and status == 200 and data.get("status") == "ready" and data.get("version") == sha
-                    and (not announcements or (
-                        data.get("announcementsEnabled") is True and data.get("requiresApproval") is True))):
+            if isinstance(data, dict) and status == 200 and data.get("status") == "ready" and data.get("version") == sha:
                 return
         except (urllib.error.URLError, OSError, ValueError, TypeError):
             pass
@@ -154,32 +150,44 @@ def wait_for_health(url, sha, *, announcements=False, attempts=30, delay=10):
     raise RuntimeError("Health check did not confirm the expected artifact/configuration; release was NOT activated")
 
 
-def activate(app, group, sha, url):
+def announcement_environment(app, group):
+    hosted = {entry["name"]: entry["value"] for entry in json.loads(azure(
+        "functionapp", "config", "appsettings", "list",
+        "--name", app, "--resource-group", group, "--output", "json",
+    ))}
+    required = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_CHAT_DEPLOYMENT",
+                "CosmosDbConnectionString", "CosmosDatabase", "CosmosTimedTasksContainer", "TELEGRAM_BOT_TOKEN")
+    if any(not isinstance(hosted.get(name), str) or not hosted[name].strip() for name in required):
+        raise RuntimeError("Hosted announcement configuration is incomplete; no delivery was attempted")
+    return {name: value for name, value in hosted.items()
+            if name.startswith("AZURE_OPENAI_") or name in required or name == "TestUsers"}
+
+
+def announce(app, group, sha, url, runner):
     wait_for_health(url, sha)
-    azure(
-        "functionapp", "config", "appsettings", "set", "--name", app, "--resource-group", group,
-        "--settings", "ReleaseAnnouncementsRequireApproval=true", "ReleaseAnnouncementsEnabled=true",
-        "--output", "none",
+    private = announcement_environment(app, group)
+    if not os.environ.get("GITHUB_TOKEN"):
+        raise RuntimeError("The pipeline's read-only GitHub token is required")
+    runner = Path(runner).resolve()
+    if not runner.is_file() or runner.name != "release-announcer.dll":
+        raise ValueError("A published release-announcer.dll artifact is required")
+    result = subprocess.run(
+        ["dotnet", str(runner)], env={**os.environ, **private},
+        capture_output=True, text=True, check=False, timeout=540,
     )
-    wait_for_health(url, sha, announcements=True)
-    key = azure(
-        "functionapp", "keys", "list", "--name", app, "--resource-group", group,
-        "--query", "functionKeys.default", "--output", "tsv",
-    )
-    if not key or key in ("None", "null") or "\n" in key or "\r" in key:
-        raise RuntimeError("No default Function key available; release was NOT activated")
-    print("::add-mask::" + key.replace("%", "%25"), flush=True)
-    status, _ = request(f"{url}/api/releases/{sha}/activate", key)
-    if status != 204:
-        raise RuntimeError("Release activation was not confirmed; inspect the deployment before retrying")
-    print(f"Healthy artifact {sha} activated; the bot timer will announce it without duplicate sends.")
+    # The runner emits only sanitized progress/errors, never provider bodies or credentials.
+    print(result.stdout, end="")
+    print(result.stderr, end="", file=sys.stderr)
+    if result.returncode:
+        raise RuntimeError("Announcement delivery failed; deployment is live but the release job must NOT report success")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("package", "validate", "configure", "activate"))
+    parser.add_argument("phase", choices=("package", "validate", "configure", "announce"))
     parser.add_argument("--source")
     parser.add_argument("--destination")
+    parser.add_argument("--runner")
     args = parser.parse_args()
     if args.phase == "package":
         if not args.source or not args.destination:
@@ -193,11 +201,15 @@ def main():
     app, group, sha = context()
     url = target(app, group)
     if args.phase == "validate":
+        announcement_environment(app, group)
         print(f"Verified isolated Flex target: {app}")
+        print("Verified required hosted announcement settings; credentials were not changed.")
     elif args.phase == "configure":
         configure_conversation_policy(app, group)
     else:
-        activate(app, group, sha, url)
+        if not args.runner:
+            parser.error("announce requires --runner")
+        announce(app, group, sha, url, args.runner)
 
 
 if __name__ == "__main__":

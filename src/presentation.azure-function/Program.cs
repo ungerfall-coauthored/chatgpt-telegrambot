@@ -35,7 +35,6 @@ namespace Ungerfall.ChatGpt.TelegramBot.AzureFunction
                        .AddTypedClient<ITelegramBotClient>(httpClient => new TelegramBotClient(tgToken, httpClient));
                    s.AddAzureOpenAi();
                    s.AddAzureDecisions();
-                   s.AddReleaseAnnouncements();
                    s.Configure<CosmosDbOptions>(opt =>
                    {
                        opt.DatabaseId = Environment.GetEnvironmentVariable(
