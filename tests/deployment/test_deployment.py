@@ -124,6 +124,56 @@ class DeploymentTests(unittest.TestCase):
             deployment.wait_for_health(URL, SHA, announcements=True, attempts=4, delay=0)
         self.assertEqual(4, request.call_count)
 
+    def test_managed_policy_merges_only_reviewed_flags_and_verifies_without_touching_keys(self):
+        desired = {"-123": {"DecisionsEnabled": True, "NaturalRequestsEnabled": True, "AutonomousEnabled": False}}
+        current = {"-123": {"DecisionDailyLimit": 17, "AutonomousEnabled": True}, "-456": {"DecisionsEnabled": False}}
+        updated = {"-123": {**current["-123"], **desired["-123"]}, "-456": current["-456"]}
+        secrets = {
+            "AZURE_DECISIONS_ENDPOINT": "https://example.services.ai.azure.com/",
+            "AZURE_DECISIONS_API_KEY": "test-key-not-for-cli-or-logs",
+            "AZURE_DECISIONS_DEPLOYMENT": "test-deployment",
+        }
+
+        def listing(policy):
+            return json.dumps([{"name": name, "value": value} for name, value in
+                               {**secrets, "ConversationPolicyChats": json.dumps(policy)}.items()])
+
+        for existing, responses, writes in (
+            (current, [listing(current), "", listing(updated)], 1),
+            (updated, [listing(updated), listing(updated)], 0),
+        ):
+            with self.subTest(existing=existing), patch.object(deployment.Path, "read_text", return_value=json.dumps(desired)), \
+                    patch.object(deployment, "azure", side_effect=responses) as azure, contextlib.redirect_stdout(io.StringIO()) as output:
+                deployment.configure_conversation_policy(APP, GROUP)
+                setters = [call.args for call in azure.call_args_list if "set" in call.args]
+                self.assertEqual(writes, len(setters))
+                if setters:
+                    self.assertIn("ConversationPolicyChats=" + json.dumps(updated, separators=(",", ":")), setters[0])
+                self.assertNotIn(secrets["AZURE_DECISIONS_API_KEY"], output.getvalue() + repr(azure.call_args_list))
+
+    def test_managed_policy_rejects_bad_source_missing_credentials_and_invalid_hosted_state(self):
+        for desired in ([], {"123": {}}, {"-123": {"Unknown": True}}, {"-123": {"NaturalRequestsEnabled": "true"}}):
+            with self.subTest(desired=desired), patch.object(deployment.Path, "read_text", return_value=json.dumps(desired)), \
+                    patch.object(deployment, "azure") as azure, self.assertRaises(ValueError):
+                deployment.configure_conversation_policy(APP, GROUP)
+            azure.assert_not_called()
+        desired = {"-123": {"NaturalRequestsEnabled": True}}
+        with patch.object(deployment.Path, "read_text", return_value=json.dumps(desired)), \
+                patch.object(deployment, "azure", return_value="[]") as azure, self.assertRaises(RuntimeError):
+            deployment.configure_conversation_policy(APP, GROUP)
+        self.assertEqual(1, azure.call_count)
+        with patch.object(deployment.Path, "read_text", return_value='{"-123":{"NaturalRequestsEnabled":false}}'), \
+                patch.object(deployment, "azure", return_value='[{"name":"ConversationPolicyChats","value":"[]"}]') as azure, \
+                self.assertRaises(ValueError):
+            deployment.configure_conversation_policy(APP, GROUP)
+        self.assertEqual(1, azure.call_count)
+
+    def test_managed_policy_requires_readback_confirmation(self):
+        desired = '{"-123":{"NaturalRequestsEnabled":false}}'
+        with patch.object(deployment.Path, "read_text", return_value=desired), \
+                patch.object(deployment, "azure", side_effect=["[]", "", "[]"]), self.assertRaises(RuntimeError):
+            deployment.configure_conversation_policy(APP, GROUP)
+
     def test_unhealthy_artifact_never_changes_settings_or_activates(self):
         with patch.object(deployment, "wait_for_health", side_effect=RuntimeError("unhealthy")), \
                 patch.object(deployment, "azure") as azure, patch.object(deployment, "request") as request:

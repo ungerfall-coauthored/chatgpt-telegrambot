@@ -123,6 +123,16 @@ Local settings are not deployed. For the hosted bot, configure the three keys
 and any deliberate group opt-ins in the Function App's environment variables
 or Key Vault references; never in GitHub Actions secrets.
 
+The fork deployment also applies reviewed, **non-secret** flag patches from
+`config/conversation-policy.json` through its existing app-scoped OIDC identity.
+The food group enables natural requests and continuations, with unsolicited
+interjections disabled; other groups and custom limits are preserved.
+The pipeline checks the three hosted model settings exist and re-reads the
+merged policy before deploying. It never writes or logs model keys.
+Managed flags override portal edits on the next release. To disable one, set
+it explicitly to `false` in the file; removing an entry does not erase existing
+hosted configuration. Routine policy changes require no interactive `az login`.
+
 ### Context windows, request budgets, and model compatibility
 
 The old 1,638-token chat limit and 3,072-token summary chunks are replaced with

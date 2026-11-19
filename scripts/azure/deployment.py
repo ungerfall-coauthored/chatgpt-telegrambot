@@ -17,6 +17,7 @@ import zipfile
 REPOSITORY = "ungerfall-coauthored/chatgpt-telegrambot"
 DEPLOYMENT_APP = "fapp-ungerfall-chatgpt-telegram-flex"
 DEPLOYMENT_GROUP = "rg-chatgpt"
+POLICY_PATH = Path(__file__).resolve().parents[2] / "config" / "conversation-policy.json"
 
 
 def package(source, destination):
@@ -96,6 +97,47 @@ def request(url, key=None):
         return response.status, body
 
 
+def configure_conversation_policy(app, group):
+    desired = json.loads(POLICY_PATH.read_text())
+    flags = {"DecisionsEnabled", "NaturalRequestsEnabled", "ContinuationEnabled", "AutonomousEnabled"}
+    if not isinstance(desired, dict) or any(
+        not re.fullmatch(r"-[1-9][0-9]*", chat)
+        or not isinstance(options, dict)
+        or any(name not in flags or type(value) is not bool for name, value in options.items())
+        for chat, options in desired.items()
+    ):
+        raise ValueError("Managed conversation policy must contain negative group IDs and boolean feature flags only")
+
+    def settings():
+        return {entry["name"]: entry["value"] for entry in json.loads(azure(
+            "functionapp", "config", "appsettings", "list",
+            "--name", app, "--resource-group", group, "--output", "json",
+        ))}
+
+    hosted = settings()
+    if any(options.get(flag) for options in desired.values() for flag in flags - {"DecisionsEnabled"}):
+        if any(not isinstance(hosted.get(name), str) or not hosted[name].strip() for name in (
+            "AZURE_DECISIONS_ENDPOINT", "AZURE_DECISIONS_DEPLOYMENT", "AZURE_DECISIONS_API_KEY",
+        )):
+            raise RuntimeError("Decision settings are incomplete; group policy was NOT changed")
+    current = json.loads(hosted.get("ConversationPolicyChats") or "{}")
+    if not isinstance(current, dict) or any(not isinstance(options, dict) for options in current.values()):
+        raise ValueError("Hosted conversation policy is invalid; refusing to overwrite it")
+    updated = {chat: {**options} for chat, options in current.items()}
+    for chat, options in desired.items():
+        updated.setdefault(chat, {}).update(options)
+    if updated != current:
+        azure(
+            "functionapp", "config", "appsettings", "set", "--name", app, "--resource-group", group,
+            "--settings", "ConversationPolicyChats=" + json.dumps(updated, separators=(",", ":")),
+            "--output", "none",
+        )
+    confirmed = json.loads(settings().get("ConversationPolicyChats") or "{}")
+    if confirmed != updated:
+        raise RuntimeError("Hosted conversation policy verification failed; deployment must NOT proceed")
+    print(f"Verified managed conversation policy for {len(desired)} group(s); credentials were not changed.")
+
+
 def wait_for_health(url, sha, *, announcements=False, attempts=30, delay=10):
     for attempt in range(attempts):
         try:
@@ -135,7 +177,7 @@ def activate(app, group, sha, url):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("package", "validate", "activate"))
+    parser.add_argument("phase", choices=("package", "validate", "configure", "activate"))
     parser.add_argument("--source")
     parser.add_argument("--destination")
     args = parser.parse_args()
@@ -152,6 +194,8 @@ def main():
     url = target(app, group)
     if args.phase == "validate":
         print(f"Verified isolated Flex target: {app}")
+    elif args.phase == "configure":
+        configure_conversation_policy(app, group)
     else:
         activate(app, group, sha, url)
 
