@@ -9,7 +9,7 @@ public sealed class ReleaseAnnouncementSettings
 {
     public ReleaseAnnouncementSettings(
         bool enabled = false, string? version = null,
-        string repository = "ungerfall-coauthored/chatgpt-telegrambot", int maxCommits = 50, int retryDelayMinutes = 15,
+        string repository = "ungerfall-coauthored/chatgpt-telegrambot", int maxCommits = 50,
         bool requireDeploymentApproval = true)
     {
         if (enabled && !IsCommit(version))
@@ -18,13 +18,10 @@ public sealed class ReleaseAnnouncementSettings
             throw new ArgumentException("ReleaseRepository must be owner/repository.");
         if (maxCommits is < 1 or > 100)
             throw new ArgumentOutOfRangeException(nameof(maxCommits));
-        if (retryDelayMinutes is < 1 or > 1440)
-            throw new ArgumentOutOfRangeException(nameof(retryDelayMinutes));
         Enabled = enabled;
         Version = version?.ToLowerInvariant() ?? string.Empty;
         Repository = repository;
         MaxCommits = maxCommits;
-        RetryDelay = TimeSpan.FromMinutes(retryDelayMinutes);
         RequireDeploymentApproval = requireDeploymentApproval;
     }
 
@@ -32,7 +29,6 @@ public sealed class ReleaseAnnouncementSettings
     public string Version { get; }
     public string Repository { get; }
     public int MaxCommits { get; }
-    public TimeSpan RetryDelay { get; }
     public bool RequireDeploymentApproval { get; }
 
     public static string ArtifactVersion =>
@@ -51,7 +47,6 @@ public sealed class ReleaseAnnouncementSettings
             bool.Parse(Environment.GetEnvironmentVariable("ReleaseAnnouncementsEnabled") ?? "false"),
             version, Environment.GetEnvironmentVariable("ReleaseRepository") ?? "ungerfall-coauthored/chatgpt-telegrambot",
             int.Parse(Environment.GetEnvironmentVariable("ReleaseNotesMaxCommits") ?? "50", CultureInfo.InvariantCulture),
-            int.Parse(Environment.GetEnvironmentVariable("ReleaseRetryDelayMinutes") ?? "15", CultureInfo.InvariantCulture),
             bool.Parse(Environment.GetEnvironmentVariable("ReleaseAnnouncementsRequireApproval") ?? "true"));
     }
 }

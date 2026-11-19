@@ -39,6 +39,10 @@ public class DependencyInjectionTest
         };
         foreach (var type in assemblies.SelectMany(x => x.GetTypes()).Where(type => type.IsClass))
         {
+            // These services are composed by the one-shot pipeline runner, not the bot host.
+            if (type == typeof(GitHubReleaseNotesSource) || type == typeof(ReleaseAnnouncementService))
+                continue;
+
             // Skip anonymous types
             if (type.GetCustomAttributes(typeof(CompilerGeneratedAttribute), inherit: false).Length != 0)
             {

@@ -1,10 +1,12 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using OpenAI.Interfaces;
+using OpenAI.Managers;
 using OpenAI.ObjectModels.RequestModels;
 using OpenAI.ObjectModels.ResponseModels;
 using OpenAI.ObjectModels.SharedModels;
 using System.Collections.Immutable;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
@@ -122,7 +124,7 @@ public class ReleaseAnnouncementTests
         var fixture = new Fixture();
         fixture.Repository.Save(Arg.Is<ReleaseAnnouncementReceipt>(r => r.Stage == ReleaseAnnouncementReceipt.Sending),
             Arg.Any<CancellationToken>()).Returns(Task.FromException(new IOException("Write outcome unknown")));
-        await fixture.Create().Execute(default);
+        Assert.False(await fixture.Create().Execute(default));
         Assert.Empty(fixture.Messages);
         await fixture.Repository.DidNotReceive().Release(Arg.Any<ReleaseAnnouncementReceipt>(), Arg.Any<CancellationToken>());
     }
@@ -137,7 +139,7 @@ public class ReleaseAnnouncementTests
             {
                 Choices = [new ChatChoiceResponse { FinishReason = "length", Message = ChatMessage.FromAssistant("Incomplete") }]
             });
-        await fixture.Create().Execute(default);
+        Assert.False(await fixture.Create().Execute(default));
         Assert.Empty(fixture.Messages);
         await fixture.Repository.Received(1).Release(Arg.Any<ReleaseAnnouncementReceipt>(), Arg.Any<CancellationToken>());
     }
@@ -153,10 +155,61 @@ public class ReleaseAnnouncementTests
             PreviousVersion = Previous,
             Summary = "Сохранённое описание."
         };
-        await fixture.Create().Execute(default);
+        Assert.True(await fixture.Create().Execute(default));
         Assert.Contains("Сохранённое описание.", Assert.Single(fixture.Messages).Text);
         Assert.Empty(fixture.Notes.ReceivedCalls());
         Assert.Empty(fixture.Ai.ReceivedCalls());
+    }
+
+    [Theory]
+    [InlineData(ReleaseAnnouncementReceipt.Completed, 42, true)]
+    [InlineData(ReleaseAnnouncementReceipt.Completed, null, false)]
+    [InlineData(ReleaseAnnouncementReceipt.Sending, null, false)]
+    [InlineData(ReleaseAnnouncementReceipt.Processing, null, false)]
+    public async Task UnclaimedReceiptSucceedsOnlyForConfirmedDelivery(string stage, int? messageId, bool expected)
+    {
+        var fixture = new Fixture();
+        fixture.Receipts[(-1, Version)] = new ReleaseAnnouncementReceipt
+        {
+            Stage = stage, TelegramMessageId = messageId,
+        };
+        fixture.Repository.Begin(-1, Version, Arg.Any<CancellationToken>()).Returns((ReleaseAnnouncementReceipt?)null);
+        Assert.Equal(expected, await fixture.Create().Execute(default));
+        Assert.Empty(fixture.Messages);
+        Assert.Empty(fixture.Notes.ReceivedCalls());
+    }
+
+    [SkippableFact]
+    [Trait("Category", "Integration")]
+    public async Task PipelineAnnouncementUsesRealGitHubAndAzureSummaryWithoutSendingTelegram()
+    {
+        Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");
+        const string previous = "54e486491713dbf3d8f075266c85a9330ed10e5d";
+        const string version = "21a00881f5f17e6a314950529cb9e9a3825450f0";
+        var fixture = new Fixture();
+        fixture.Whitelist.GetAllowedGroupIds().Returns([-1, -2]);
+        foreach (var group in new[] { -1L, -2L })
+            fixture.Receipts[(group, version)] = new ReleaseAnnouncementReceipt
+            {
+                ChatId = group, Version = version, PreviousVersion = previous,
+            };
+        using var github = new HttpClient { BaseAddress = new Uri("https://api.github.com/"), Timeout = TimeSpan.FromSeconds(30) };
+        github.DefaultRequestHeaders.UserAgent.ParseAdd("coauthored-telegrambot-release-notes");
+        github.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        github.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+        github.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer",
+            Environment.GetEnvironmentVariable("GITHUB_TOKEN") ?? throw new InvalidOperationException("GITHUB_TOKEN is required"));
+        var azure = AzureOpenAiSettings.FromEnvironment();
+        using var summary = new SummaryOpenAiClient(new OpenAIService(azure.CreateOptions(azure.SummaryDeployment)),
+            azure.SummaryDeployment, azure.Summary);
+        var notes = new GitHubReleaseNotesSource(github, new ReleaseAnnouncementSettings(true, version));
+        var service = fixture.Create(version: version, notes: notes, summary: summary);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        Assert.True(await service.Execute(timeout.Token), "Real GitHub/model announcement failed before mocked delivery");
+        Assert.Equal(2, fixture.Messages.Count);
+        Assert.All(fixture.Messages, message => Assert.Contains("Новая версия бота", message.Text));
+        Assert.True(await service.Execute(timeout.Token));
+        Assert.Equal(2, fixture.Messages.Count);
     }
 
     private sealed class Fixture
@@ -185,13 +238,17 @@ public class ReleaseAnnouncementTests
                 }
                 return Task.FromResult(receipt.Stage == ReleaseAnnouncementReceipt.Processing ? receipt : null);
             });
+            Repository.IsCompleted(Arg.Any<long>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(call =>
+                Receipts.TryGetValue((call.Arg<long>(), call.Arg<string>()), out var receipt)
+                && receipt.Stage == ReleaseAnnouncementReceipt.Completed && receipt.TelegramMessageId != null);
             Bot.SendRequest<Message>(Arg.Do<SendMessageRequest>(Messages.Add), Arg.Any<CancellationToken>())
                 .Returns(new Message { Id = 1 });
         }
 
-        public ReleaseAnnouncementService Create(bool enabled = true, string version = Version, bool requireApproval = false) => new(
-            new ReleaseAnnouncementSettings(enabled, version, requireDeploymentApproval: requireApproval), Whitelist, TestUsers, Repository, Notes,
-            new SummaryOpenAiClient(Ai, "summary"), Bot, NullLogger<ReleaseAnnouncementService>.Instance);
+        public ReleaseAnnouncementService Create(bool enabled = true, string version = Version, bool requireApproval = false,
+            IReleaseNotesSource? notes = null, SummaryOpenAiClient? summary = null) => new(
+            new ReleaseAnnouncementSettings(enabled, version, requireDeploymentApproval: requireApproval), Whitelist, TestUsers, Repository, notes ?? Notes,
+            summary ?? new SummaryOpenAiClient(Ai, "summary"), Bot, NullLogger<ReleaseAnnouncementService>.Instance);
     }
 
     [Fact]

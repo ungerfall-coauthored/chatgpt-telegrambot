@@ -13,12 +13,16 @@ namespace Ungerfall.ChatGpt.TelegramBot.Database;
 public sealed class ReleaseAnnouncementRepository : IReleaseAnnouncementRepository
 {
     private readonly Container _container;
-    private readonly ReleaseAnnouncementSettings _settings;
 
-    public ReleaseAnnouncementRepository(CosmosClient cosmos, IOptions<CosmosDbOptions> options, ReleaseAnnouncementSettings settings)
+    public ReleaseAnnouncementRepository(CosmosClient cosmos, IOptions<CosmosDbOptions> options)
     {
         _container = cosmos.GetContainer(options.Value.DatabaseId, options.Value.TimedTasksContainerId);
-        _settings = settings;
+    }
+
+    public async Task<bool> IsCompleted(long chatId, string version, CancellationToken cancellation)
+    {
+        var receipt = await Read("release-announcement:" + version, chatId, cancellation);
+        return receipt?.Stage == ReleaseAnnouncementReceipt.Completed && receipt.TelegramMessageId != null;
     }
 
     public async Task<bool> IsDeploymentApproved(string version, CancellationToken cancellation)
@@ -86,7 +90,7 @@ public sealed class ReleaseAnnouncementRepository : IReleaseAnnouncementReposito
         var current = await Read(receipt.Id, receipt.ChatId, cancellation);
         if (current?.LeaseId != receipt.LeaseId || current.Stage != ReleaseAnnouncementReceipt.Processing)
             return;
-        current.LeaseUntilUtc = DateTime.UtcNow.Add(_settings.RetryDelay);
+        current.LeaseUntilUtc = DateTime.UtcNow;
         await Save(current, cancellation);
     }
 

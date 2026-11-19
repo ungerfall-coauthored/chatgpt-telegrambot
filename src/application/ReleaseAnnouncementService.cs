@@ -3,6 +3,7 @@ using OpenAI.ObjectModels.RequestModels;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,13 +20,14 @@ public sealed class ReleaseAnnouncementService(
     IReleaseAnnouncementRepository repository, IReleaseNotesSource notes,
     SummaryOpenAiClient summaryClient, ITelegramBotClient bot, ILogger<ReleaseAnnouncementService> logger)
 {
-    public async Task Execute(CancellationToken cancellation)
+    public async Task<bool> Execute(CancellationToken cancellation)
     {
-        if (!settings.Enabled) return;
+        if (!settings.Enabled) return false;
         if (settings.RequireDeploymentApproval
-            && !await repository.IsDeploymentApproved(settings.Version, cancellation)) return;
-        var groups = whitelist.GetAllowedGroupIds().Concat(testUsers.GetOptional()).Where(id => id < 0).Distinct();
+            && !await repository.IsDeploymentApproved(settings.Version, cancellation)) return false;
+        var groups = whitelist.GetAllowedGroupIds().Concat(testUsers.GetOptional()).Where(id => id < 0).Distinct().ToArray();
         var summaries = new Dictionary<string, Task<string>>();
+        var completed = true;
         foreach (var chatId in groups)
         {
             cancellation.ThrowIfCancellationRequested();
@@ -34,7 +36,11 @@ public sealed class ReleaseAnnouncementService(
             try
             {
                 receipt = await repository.Begin(chatId, settings.Version, cancellation);
-                if (receipt == null) continue;
+                if (receipt == null)
+                {
+                    completed &= await repository.IsCompleted(chatId, settings.Version, cancellation);
+                    continue;
+                }
                 if (receipt.Summary == null)
                 {
                     var key = receipt.PreviousVersion ?? string.Empty;
@@ -58,6 +64,7 @@ public sealed class ReleaseAnnouncementService(
             }
             catch (ApiRequestException ex) when (sendStarted && TelegramDeliveryRejectedException.IsDefiniteRejection(ex))
             {
+                completed = false;
                 if (receipt != null)
                 {
                     receipt.Stage = ReleaseAnnouncementReceipt.Processing;
@@ -75,6 +82,7 @@ public sealed class ReleaseAnnouncementService(
             }
             catch (Exception ex)
             {
+                completed = false;
                 if (receipt?.Stage == ReleaseAnnouncementReceipt.Processing)
                 {
                     try { await repository.Release(receipt, CancellationToken.None); }
@@ -83,11 +91,12 @@ public sealed class ReleaseAnnouncementService(
                         logger.LogError("Unable to release announcement for {ChatId}: {ErrorType}", chatId, storageError.GetType().Name);
                     }
                 }
-                logger.LogError("Release announcement for {ChatId} failed ({ErrorType}); sending-state receipts are not automatically resent",
-                    chatId, ex.GetType().Name);
+                logger.LogError("Release announcement for {ChatId} failed ({ErrorType}, HTTP {Status}); sending-state receipts are not automatically resent",
+                    chatId, ex.GetType().Name, (ex as HttpRequestException)?.StatusCode);
                 if (ex is OperationCanceledException && cancellation.IsCancellationRequested) throw;
             }
         }
+        return completed && groups.Length > 0;
     }
 
     private async Task<string> CreateSummary(string? previousVersion, CancellationToken cancellation)

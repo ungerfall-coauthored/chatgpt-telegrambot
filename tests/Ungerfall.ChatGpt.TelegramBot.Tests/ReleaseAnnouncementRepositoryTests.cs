@@ -1,6 +1,7 @@
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Options;
 using System.Net;
+using Telegram.Bot;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
 using Ungerfall.ChatGpt.TelegramBot.Database;
 
@@ -42,6 +43,10 @@ public class ReleaseAnnouncementRepositoryTests
         await storage.Repository.Save(receipt, default);
         Assert.Null(await storage.Repository.Begin(-1, Version, default));
         Assert.Equal(-1, storage.Read(receipt).Ttl);
+        Assert.False(await storage.Repository.IsCompleted(-1, Version, default));
+        receipt.TelegramMessageId = 42;
+        await storage.Repository.Save(receipt, default);
+        Assert.Equal(stage == ReleaseAnnouncementReceipt.Completed, await storage.Repository.IsCompleted(-1, Version, default));
     }
 
     [Fact]
@@ -69,9 +74,7 @@ public class ReleaseAnnouncementRepositoryTests
         first.Summary = "Cached summary";
         await storage.Repository.Save(first, default);
         await storage.Repository.Release(first, default);
-        Assert.Null(await storage.Repository.Begin(-1, Version, default));
-        Assert.True(storage.Read(first).LeaseUntilUtc > DateTime.UtcNow.AddMinutes(14));
-        storage.Expire(first);
+        Assert.True(storage.Read(first).LeaseUntilUtc <= DateTime.UtcNow);
         var retry = (await storage.Repository.Begin(-1, Version, default))!;
         Assert.Equal(first.Summary, retry.Summary);
         retry.Stage = ReleaseAnnouncementReceipt.Completed;
@@ -80,6 +83,27 @@ public class ReleaseAnnouncementRepositoryTests
         Assert.Equal(Version, next.PreviousVersion);
         var anotherGroup = (await storage.Repository.Begin(-2, new string('b', 40), default))!;
         Assert.Null(anotherGroup.PreviousVersion);
+    }
+
+    [SkippableFact]
+    [Trait("Category", "Integration")]
+    public async Task PipelineCanReadExistingDeliveryReceiptsAndAuthenticateTelegram()
+    {
+        Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var cosmos = new CosmosClient(Environment.GetEnvironmentVariable("CosmosDbConnectionString"),
+            new CosmosClientOptions { Serializer = new CosmosSystemTextJsonSerializer() });
+        var repository = new ReleaseAnnouncementRepository(cosmos, Options.Create(new CosmosDbOptions
+        {
+            DatabaseId = Environment.GetEnvironmentVariable("CosmosDatabase")!,
+            TimedTasksContainerId = Environment.GetEnvironmentVariable("CosmosTimedTasksContainer")!,
+        }));
+        const string baseline = "54e486491713dbf3d8f075266c85a9330ed10e5d";
+        foreach (var group in new[] { -149593031L, -1001034436662L })
+            Assert.True(await repository.IsCompleted(group, baseline, timeout.Token));
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        var bot = new TelegramBotClient(Environment.GetEnvironmentVariable("TELEGRAM_BOT_TOKEN")!, http);
+        Assert.True((await bot.GetMe(timeout.Token)).IsBot);
     }
 
     private sealed class Storage
@@ -96,8 +120,7 @@ public class ReleaseAnnouncementRepositoryTests
             var cosmos = Substitute.For<CosmosClient>();
             cosmos.GetContainer("db", "tasks").Returns(container);
             Repository = new ReleaseAnnouncementRepository(cosmos,
-                Options.Create(new CosmosDbOptions { DatabaseId = "db", TimedTasksContainerId = "tasks" }),
-                new ReleaseAnnouncementSettings());
+                Options.Create(new CosmosDbOptions { DatabaseId = "db", TimedTasksContainerId = "tasks" }));
             container.ReadItemAsync<ReleaseDeploymentApproval>(Arg.Any<string>(), Arg.Any<PartitionKey>(),
                 Arg.Any<ItemRequestOptions>(), Arg.Any<CancellationToken>()).Returns(call =>
                 {

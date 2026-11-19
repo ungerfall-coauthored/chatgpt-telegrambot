@@ -20,6 +20,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Ungerfall.ChatGpt.Utils.Qui
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Ungerfall.ChatGpt.Utils.QuizIngestion.OpenTrivia", "utils.quiz-ingestion\from-open-trivia\Ungerfall.ChatGpt.Utils.QuizIngestion.OpenTrivia.csproj", "{0C81C37B-8C74-4FC6-850A-D0787DCD17EE}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "release-announcer", "presentation.release-announcer\release-announcer.csproj", "{D027EF73-CB88-4F66-83F3-1C0F924C00A2}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -50,6 +52,10 @@ Global
 		{0C81C37B-8C74-4FC6-850A-D0787DCD17EE}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{0C81C37B-8C74-4FC6-850A-D0787DCD17EE}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{0C81C37B-8C74-4FC6-850A-D0787DCD17EE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D027EF73-CB88-4F66-83F3-1C0F924C00A2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D027EF73-CB88-4F66-83F3-1C0F924C00A2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D027EF73-CB88-4F66-83F3-1C0F924C00A2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D027EF73-CB88-4F66-83F3-1C0F924C00A2}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

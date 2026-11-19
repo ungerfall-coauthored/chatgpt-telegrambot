@@ -288,9 +288,9 @@ letters during replacement.
    secret. Keep the old webhook registered until the new package is healthy.
 4. Before deployment/cutover, disable these functions on the new app:
    `QueuedUpdateHandler`, `DailySummary`, `DailyQuiz`, `DailyFilmsQuiz`,
-   `DailyVideoGamesQuiz`, `ShrinkMessage`, and `ReleaseAnnouncements`.
+   `DailyVideoGamesQuiz`, and `ShrinkMessage`.
    Keep the inherited group whitelist intact. Once the webhook is ready, the
-   cutover operator enables the queue/timer handlers and release announcements.
+   cutover operator enables the queue/timer handlers.
 
 The fork's changes include a Telegram queue wire-format change. Stop the old
 app and confirm the active update count is zero before starting the new queue
@@ -299,19 +299,18 @@ only after the replacement's health endpoint verifies the exact deployed SHA.
 
 ## Deployment announcements
 
-The Function's `ReleaseAnnouncements` timer checks once a minute; the polling
-worker checks at startup and once a minute. **Disabled by default**, including
-locally. Do not enable it against the real bot while testing.
+Announcements are a **one-shot post-deployment pipeline step**, not a timer or
+startup task. The `release-announcer` console artifact reuses the application's
+GitHub source, Azure summary client, Telegram client, and Cosmos receipt code.
+It requires the fork's `master` Actions context and matching embedded commit SHA.
 
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `ReleaseAnnouncementsEnabled` | `false` | Set `true` in the deployed app to announce versions |
-| `ReleaseAnnouncementsRequireApproval` | `true` | Require persisted approval of this SHA before any group/model work; CD grants it after health checks |
-| `ReleaseVersion` | Git SHA embedded by the .NET SDK | Optional override: the full 40-character deployed commit SHA; required for packages built outside a Git checkout |
-| `ReleaseRepository` | `ungerfall-coauthored/chatgpt-telegrambot` | GitHub repository containing the deployed commits and merged PRs |
-| `ReleaseNotesMaxCommits` | `50` | Maximum commits compared between deployments (1–100); larger ranges fail visibly instead of silently omitting changes |
-| `ReleaseRetryDelayMinutes` | `15` | Backoff after pre-send failures or definite Telegram rejection (1–1440); avoids repeatedly paying for failed summary requests |
-| `GITHUB_RELEASE_NOTES_TOKEN` | unset | Optional secret with read-only **Contents** and **Pull requests** access, for private repositories or higher GitHub API limits |
+After verifying live health at the exact deployed SHA, the existing app-scoped
+Azure OIDC identity reads the current Function App settings privately. The runner
+receives the existing Azure OpenAI key/summary configuration, Telegram token,
+and Cosmos connection in its process environment, not arguments or files.
+No new Azure key or GitHub secret copy is required. GitHub API reads use the
+job's short-lived `GITHUB_TOKEN` with read-only Contents/Pull requests permissions.
+The bot runtime no longer needs release settings or a GitHub token.
 
 Each distinct deployed SHA produces one short Russian announcement for every
 whitelisted group and every **negative** group ID in `TestUsers`; private chats
@@ -326,15 +325,15 @@ announced commit and the current commit, not just the latest PR. For the first
 announcement only PRs merged at the deployed commit are considered, avoiding a
 dump of the entire repository history. Direct commits without associated merged
 PRs get a generic technical-update message. Reverting to an already announced
-SHA does not announce it again. A new group gets the current version on the
-next check. The runtime reads GitHub; there are no runtime GitHub write permissions.
-Public repositories need no GitHub token, but unauthenticated API rate limits
-can delay announcements; errors retry after the configured backoff.
+SHA does not announce it again. A new group is included on the next pipeline run.
+Comparisons are bounded to 50 commits; larger ranges fail rather than omit changes.
 
 Persistent per-group/version receipts use the existing timed-tasks Cosmos
 container (`/chatId`) with `ttl: -1`, independently of message retention.
 Conditional writes and five-minute processing leases prevent concurrent sends.
-Notes/model failures before sending, and definite Telegram rejections, can retry.
+There are at most three attempts, ten seconds apart, within an eight-minute runner
+deadline. Notes/model failures before sending, and definite Telegram rejections,
+release their processing leases for the next bounded attempt.
 Before calling Telegram, the receipt is durably marked `sending`. An uncertain
 send or crash in that window is **not retried automatically**: avoiding duplicate
 group messages takes priority over guaranteed delivery. Check logs and the
@@ -343,19 +342,23 @@ Do not delete `sending` or `completed` receipts without checking the group first
 Cosmos and Telegram cannot provide an atomic exactly-once transaction.
 
 No announcement is sent just because a build finishes or a new worker starts.
-With the default approval requirement, the current SHA must have a permanent
+After the live health check, the pipeline runner persists a permanent
 `release-deployment:<SHA>` approval in the timed-tasks container's `/chatId=0`
-partition. The authenticated activation endpoint writes that approval
-idempotently. Never fabricate approval documents or disable this gate in CD.
-Approval is per version; existing per-group receipts still prevent resends.
+partition, then executes delivery. The job succeeds only when every expected
+group has a completed receipt with a Telegram message ID. Busy or uncertain
+receipts are failures, not silently successful skips. Failures are visible in
+Actions; there is no background polling or delayed retry after the job exits.
 
-The polling worker has no HTTP activation endpoint. For a deliberately managed
-worker-only deployment, either approve through a shared Functions deployment
-using the same database/version, or explicitly set
-`ReleaseAnnouncementsRequireApproval=false` to accept startup-only semantics.
-Keep announcements disabled locally. Flex does not require paid deployment
-slots; a failed health check leaves the new version unapproved but does not
-automatically roll back the code or stop webhook traffic.
+The old activation endpoint and announcement timers are removed. Legacy
+`ReleaseAnnouncementsEnabled`, `ReleaseAnnouncementsRequireApproval`,
+`ReleaseVersion`, and `ReleaseRetryDelayMinutes` app settings no longer control
+the running bot. They can be removed separately; no key rotation is necessary.
+
+For pre-publication integration validation, privately export the Azure OpenAI
+settings plus `GITHUB_TOKEN`, set `AZURE_OPENAI_LIVE_TEST=1`, and run:
+`dotnet test tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj -c Release --filter 'FullyQualifiedName~PipelineAnnouncementUsesRealGitHubAndAzureSummaryWithoutSendingTelegram'`.
+This exercises the actual GitHub/model clients and summary generation while
+mocking Telegram delivery and Cosmos writes; it does not send production messages.
 
 ## 4. Enable automatic CD from the fork
 
@@ -426,30 +429,25 @@ and [Flex configuration differences](https://learn.microsoft.com/azure/azure-fun
 
 CD verifies the app's isolated naming, Flex runtime metadata, and Azure
 hostname **before** uploading code. It deploys the exact tested ZIP, then polls
-anonymous `GET /api/health` for the embedded SHA. It sets approval-required and
-announcement-enabled app settings, waits for the restarted app to report both,
-fetches the app's default Function key into memory, masks it, and calls
-`POST /api/releases/<SHA>/activate` using an `x-functions-key` header. The
-key is not stored in GitHub or passed in a URL/command-line argument.
-Azure Functions host authentication protects that endpoint; it rejects a
-different SHA or unsafe settings, and Cosmos approval-write failures fail CD.
-The next timer tick can announce the approved version.
+anonymous `GET /api/health` for the embedded SHA, with a bounded readiness wait.
+The separately published announcer has its own verified checksum and must carry
+the same embedded SHA. The one-shot Actions step reads hosted credentials via
+OIDC and performs announcement generation/delivery directly on the runner.
+It does not call an activation endpoint or fetch Function keys.
 
-Health verifies worker startup, artifact identity and announcement settings,
-not full Telegram/Service Bus/model functionality. Activation additionally
-proves that the app can write to the timed-tasks Cosmos container. No paid
-model/image request or test message is part of the pipeline. A previously
-approved SHA remains approved when redeployed; this gate is not a continuous
-health monitor or an atomic transaction with GitHub job completion.
+Health verifies worker startup and artifact identity, not full Telegram/Service
+Bus/model functionality. The announcement step additionally exercises GitHub,
+the existing Azure summary deployment, Cosmos, and real Telegram delivery.
+It makes a paid summary request for actual release notes, not a test message or
+image request. Model/network/storage/delivery failures make the job fail even
+if the code has already deployed successfully.
 
 If health fails, inspect Azure logs, runtime/configuration and networking.
-A stale `ReleaseVersion` override deliberately makes health fail; remove it
-instead of changing the expected CI SHA. If activation fails, check app-scoped
-IAM, Function keys, and Cosmos settings; a rerun is idempotent and existing
-group receipts prevent duplicate announcements. An interrupted activation can
+A mismatched embedded SHA deliberately makes health fail. If announcement
+delivery fails, check the sanitized job errors, app-scoped IAM, hosted settings,
+and Cosmos receipts. A rerun skips confirmed deliveries. An interrupted send can
 have an uncertain outcome, so inspect the approval/receipts rather than
 assuming no message was sent. Fix or revert through a new fork PR and merge:
 the corrected `master` is rebuilt and deployed. There is no automatic
 rollback/zero-downtime promise on this single Flex app. Disable the repository
-deployment variable to pause future deployments; disable
-`ReleaseAnnouncementsEnabled` in Azure to pause group notifications.
+deployment variable to pause future deployments and their announcements.
