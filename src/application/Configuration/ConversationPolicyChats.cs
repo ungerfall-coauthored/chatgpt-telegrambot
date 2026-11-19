@@ -28,6 +28,7 @@ public class ConversationPolicyOptions
 {
     public bool TrackContinuation { get; set; }
     public bool DecisionsEnabled { get; set; }
+    public bool NaturalRequestsEnabled { get; set; }
     public bool ContinuationEnabled { get; set; }
     public bool AutonomousEnabled { get; set; }
     public int WindowSeconds { get; set; } = 60;

@@ -265,7 +265,8 @@ public class UpdateHandler
             cancellationToken: cancellation);
         await SaveToHistory(chatId, UserId(msg), msg.Text!, msg.Id, msg.Date, user, cancellation, msg.MessageThreadId);
         await SaveToHistory(chatId, UserId(sent), chatGptResponse, sent.Id, sent.Date, BotUsername[1..], cancellation, msg.MessageThreadId);
-        await _conversationPolicy.Observe(msg, sent, chatGptResponse, cancellation, autonomous: autonomous, addressed: activateBot);
+        await _conversationPolicy.Observe(msg, sent, chatGptResponse, cancellation, autonomous: autonomous,
+            addressed: activateBot || decision == ConversationDecision.NaturalRequest);
         _logger.LogInformation("The message was sent with id: {SentMessageId}", sent.Id);
         return sent;
 

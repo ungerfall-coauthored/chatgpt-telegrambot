@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Telegram.Bot.Types;
@@ -16,6 +17,9 @@ using Ungerfall.ChatGpt.TelegramBot.Configuration;
 namespace Ungerfall.ChatGpt.TelegramBot;
 public class ConversationPolicy
 {
+    private static readonly Regex BotReference = new(@"\b(?:(?:chat)?bots?|chatgpt|(?:чат)?бот\p{L}*|чатгпт)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+    private readonly string _botUsername = (Environment.GetEnvironmentVariable("TELEGRAM_BOT_USERNAME") ?? "chatgpt_ungerfall_bot").TrimStart('@');
     private readonly IConversationRepository _repository;
     private readonly ConversationPolicyChats _chats;
     private readonly ILogger<ConversationPolicy> _logger;
@@ -33,10 +37,13 @@ public class ConversationPolicy
     public async Task<ConversationDecision> Decide(Message message, Database.ConversationReceipt receipt, CancellationToken cancellation)
     {
         var options = _chats.Get(message.Chat.Id);
+        var naturalRequest = options.NaturalRequestsEnabled && message.Text != null
+            && (BotReference.IsMatch(message.Text)
+                || !string.IsNullOrWhiteSpace(_botUsername) && message.Text.Contains(_botUsername, StringComparison.OrdinalIgnoreCase));
         if (!options.DecisionsEnabled || !_decisions.IsConfigured
-            || (!options.ContinuationEnabled && !options.AutonomousEnabled)
+            || (!naturalRequest && !options.ContinuationEnabled && !options.AutonomousEnabled)
             || message.Chat.Type is not (ChatType.Group or ChatType.Supergroup)
-            || message.From == null || message.ReplyToMessage != null
+            || message.From == null || message.ReplyToMessage != null && !naturalRequest
             || message.Text?.Length > 512
             || message.Entities?.Any(x => x.Type is MessageEntityType.Mention or MessageEntityType.TextMention) == true)
             return ConversationDecision.Ignore;
@@ -47,6 +54,7 @@ public class ConversationPolicy
             var cached = receipt.Decision;
             if (string.IsNullOrWhiteSpace(receipt.DecisionInput) || receipt.DecisionInput.Length > 16384
                 || cached == ConversationDecision.Continuation && !options.ContinuationEnabled
+                || cached == ConversationDecision.NaturalRequest && !options.NaturalRequestsEnabled
                 || cached == ConversationDecision.Interjection && !options.AutonomousEnabled)
                 return ConversationDecision.Ignore;
             if (cached == ConversationDecision.Interjection && !await TryMarkInterjection(message, cancellation))
@@ -57,9 +65,10 @@ public class ConversationPolicy
         for (var attempt = 0; attempt < 3; attempt++)
         {
             var state = await _repository.Get(message.Chat.Id, message.MessageThreadId ?? 0, cancellation);
-            var continuation = options.ContinuationEnabled && !state.AutonomousPending
+            var continuation = !naturalRequest && options.ContinuationEnabled && !state.AutonomousPending
                 && state.UserId == message.From.Id && state.ExpiresUtc > now && state.RemainingCandidates > 0;
-            if (!continuation && (!options.AutonomousEnabled || state.AutonomousPending
+            var interjection = !continuation && !naturalRequest;
+            if (interjection && (!options.AutonomousEnabled || state.AutonomousPending
                 || !state.Context.Any(x => !x.IsBot && x.UserId != message.From.Id && x.DateUtc >= now.AddMinutes(-2))))
                 return ConversationDecision.Ignore;
 
@@ -72,7 +81,7 @@ public class ConversationPolicy
                 budget.AutonomousCandidates = 0;
             }
             if (budget.Decisions >= options.DecisionDailyLimit) return ConversationDecision.Ignore;
-            if (!continuation)
+            if (interjection)
             {
                 if (budget.AutonomousCandidates >= options.AutonomousDailyLimit
                     || budget.LastAutonomousUtc.AddMinutes(options.CooldownMinutes) > now)
@@ -84,26 +93,30 @@ public class ConversationPolicy
                 budget.AutonomousCandidates++;
                 budget.LastAutonomousUtc = now;
             }
-            else
+            else if (continuation)
             {
                 state.RemainingCandidates--;
             }
             budget.Decisions++;
             receipt.DecisionInput = JsonSerializer.Serialize(new
             {
+                bot_username = _botUsername,
                 context = state.Context.Where(x => x.DateUtc >= now.AddMinutes(-2) && x.MessageId != message.Id).TakeLast(4)
                     .Select(x => new { speaker = x.IsBot ? "bot" : x.UserId == message.From.Id ? "current_user" : "other_user", text = Truncate(x.Text) }).ToArray(),
                 latest = Truncate(message.Text ?? string.Empty),
             }, new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
             if (!await _repository.ReserveDecision(receipt, state, budget, cancellation)) continue;
 
-            var approved = await _decisions.ShouldReply(receipt.DecisionInput, !continuation, options.MinProbability, cancellation);
+            var approved = naturalRequest && !continuation
+                ? await _decisions.ShouldAnswerRequest(receipt.DecisionInput, options.MinProbability, cancellation)
+                : await _decisions.ShouldReply(receipt.DecisionInput, interjection, options.MinProbability, cancellation);
             receipt.Decision = !approved ? ConversationDecision.Ignore
-                : continuation ? ConversationDecision.Continuation : ConversationDecision.Interjection;
+                : continuation ? ConversationDecision.Continuation
+                : naturalRequest ? ConversationDecision.NaturalRequest : ConversationDecision.Interjection;
             if (approved)
             {
                 await _repository.SaveReceipt(receipt, cancellation);
-                if (!continuation && !await TryMarkInterjection(message, cancellation))
+                if (interjection && !await TryMarkInterjection(message, cancellation))
                 {
                     receipt.Decision = ConversationDecision.Ignore;
                     await _repository.SaveReceipt(receipt, cancellation);
@@ -136,7 +149,7 @@ public class ConversationPolicy
         Message message, Message? reply, string? response, CancellationToken cancellation, bool autonomous = false, bool addressed = false)
     {
         var options = _chats.Get(message.Chat.Id);
-        if (!options.TrackContinuation && !options.ContinuationEnabled && !options.AutonomousEnabled) return;
+        if (!options.TrackContinuation && !options.NaturalRequestsEnabled && !options.ContinuationEnabled && !options.AutonomousEnabled) return;
 
         for (var attempt = 0; attempt < 3; attempt++)
         {
@@ -199,4 +212,5 @@ public enum ConversationDecision
     Ignore,
     Continuation,
     Interjection,
+    NaturalRequest,
 }

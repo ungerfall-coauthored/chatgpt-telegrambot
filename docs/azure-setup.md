@@ -87,24 +87,37 @@ git-ignored **`src/presentation.azure-function/local.settings.json`** (not
 }
 ```
 
-These settings do not enable unprompted replies. `ConversationPolicyChats`
+These settings do not enable no-mention replies by themselves. `ConversationPolicyChats`
 remains an opt-in JSON dictionary keyed by group ID. For example, enabling
-**continuations only** for a test group is this single string setting:
+**natural-language requests and continuations, without unsolicited interjections**,
+for a test group is this single string setting:
 
 ```json
 {
-  "ConversationPolicyChats": "{\"-1001234567890\":{\"DecisionsEnabled\":true,\"ContinuationEnabled\":true,\"AutonomousEnabled\":false}}"
+  "ConversationPolicyChats": "{\"-1001234567890\":{\"DecisionsEnabled\":true,\"NaturalRequestsEnabled\":true,\"ContinuationEnabled\":true,\"AutonomousEnabled\":false}}"
 }
 ```
 
+`NaturalRequestsEnabled` permits explicit requests such as "I'd like the bot's
+opinion" without an `@mention`, earlier bot reply, or active continuation
+window, including after another human speaks or when replying to that human.
+A cheap candidate filter looks for English/Russian bot references or the
+configured `TELEGRAM_BOT_USERNAME`; the decision model must still confirm
+bot-directed intent. Merely discussing bots is not an instruction to answer,
+and ordinary group questions do not spend this path's API budget.
+
 `ContinuationEnabled` permits recent follow-ups without an `@mention`;
 `AutonomousEnabled` separately permits occasional unsolicited interjections.
-Both require `DecisionsEnabled=true`. Existing sampling, cooldowns, daily
-budgets, and `MinProbability` checks remain in force. Missing configuration,
+All three flags default to false and require `DecisionsEnabled=true`.
+Natural requests share `DecisionDailyLimit` (default 20 per group) and the
+`MinProbability` threshold (default 0.95), but do not consume unsolicited
+interjection quotas or depend on their sampling/cooldown. Those restrictions
+continue to apply only to unsolicited interjections. Missing configuration,
 invalid/refused answers, API failures, and the three-second request timeout
 all leave the bot silent. Evaluate false positives and latency before changing
 real group flags. Do not run a local consumer against the deployed bot's
-production queues.
+production queues. Telegram must deliver ordinary group messages: disable
+privacy mode in BotFather or make the bot a group administrator.
 
 Local settings are not deployed. For the hosted bot, configure the three keys
 and any deliberate group opt-ins in the Function App's environment variables
