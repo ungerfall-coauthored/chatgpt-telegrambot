@@ -17,6 +17,7 @@ using Ungerfall.ChatGpt.TelegramBot.Worker.Services;
 IHost host = Host.CreateDefaultBuilder(args)
     .ConfigureServices((context, services) =>
     {
+        services.AddPrompts();
         // Register Bot configuration
         services.Configure<Configuration>(opt =>
         {

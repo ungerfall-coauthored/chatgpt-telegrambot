@@ -150,7 +150,7 @@ public class CompletionSettingsTests
         var cache = Substitute.For<ITimedTaskExecutionRepository>();
         cache.BeginTldr(123, Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new TldrCache());
         var whitelist = Substitute.For<IWhitelist>();
-        whitelist.GetSystemRoleMessage(123).Returns("system");
+        whitelist.GetSummarySystemRoleMessage(123).Returns("system");
         var settings = TestAzureSettings.Create(summary: new CompletionSettings(maxCompletionTokens: 4096, temperature: null));
         var command = new TooLongDidNotReadToday(repository, new TokenCounter(),
             new SummaryOpenAiClient(client, settings.SummaryDeployment, settings.Summary),

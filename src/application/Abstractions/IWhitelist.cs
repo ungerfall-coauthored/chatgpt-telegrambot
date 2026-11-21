@@ -5,5 +5,6 @@ public interface IWhitelist
 {
     bool IsGroupAllowedToUseBot(long chatId);
     string GetSystemRoleMessage(long chatId);
+    string GetSummarySystemRoleMessage(long chatId);
     IEnumerable<long> GetAllowedGroupIds();
 }

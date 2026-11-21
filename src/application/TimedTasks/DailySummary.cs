@@ -17,13 +17,6 @@ public class DailySummary : TimedTask
     public const string CRON_EXPRESSION = "0 55 23 * * *";
     private const int MaxConcurrentRequests = 4;
 
-    // TODO: move to config/db
-    private const string Prompt = """
-            Напиши краткое содержание переписки.
-            Если есть неотвеченные вопросы, перечисли их и ответь.
-            В конце с новой строки добавь самые релевантные #теги переписки до 5 штук.
-            """;
-
     private readonly DailySummaryChats _chats;
     private readonly IWhitelist _whitelist;
     private readonly ITelegramMessageRepository _messages;
@@ -31,6 +24,7 @@ public class DailySummary : TimedTask
     private readonly ILogger<DailySummary> _logger;
     private readonly string _model;
     private readonly CompletionSettings _settings;
+    private readonly PromptCatalog _prompts;
 
     public DailySummary(
         DailySummaryChats chats,
@@ -39,7 +33,7 @@ public class DailySummary : TimedTask
         ILogger<DailySummary> logger,
         IWhitelist whitelist,
         ITelegramMessageRepository messages,
-        SummaryOpenAiClient openAiClient) : base(repo, botClient, logger)
+        SummaryOpenAiClient openAiClient, PromptCatalog? prompts = null) : base(repo, botClient, logger)
     {
         _chats = chats;
         _whitelist = whitelist;
@@ -48,6 +42,7 @@ public class DailySummary : TimedTask
         _model = openAiClient.Deployment;
         _settings = openAiClient.Settings;
         _logger = logger;
+        _prompts = prompts ?? PromptCatalog.Load();
     }
 
     protected override IEnumerable<long> ChatIds => _chats.Get();
@@ -80,9 +75,9 @@ public class DailySummary : TimedTask
         [EnumeratorCancellation] CancellationToken cancellation = default)
     {
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var systemRole = _whitelist.GetSystemRoleMessage(chatId);
+        var systemRole = _whitelist.GetSummarySystemRoleMessage(chatId);
         await foreach (var batch in ChatMessageBuilder.CreateBatches(
-            GetOrderedHistory(chatId, today, cancellation), systemRole, Prompt, cancellation: cancellation,
+            GetOrderedHistory(chatId, today, cancellation), systemRole, _prompts.Summaries.Daily, cancellation: cancellation,
             maxTokens: _settings.InputTokens))
         {
             yield return _settings.CreateRequest(batch, _model);

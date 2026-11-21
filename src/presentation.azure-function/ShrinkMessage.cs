@@ -22,19 +22,21 @@ public class ShrinkMessage
     private readonly ITelegramMessageRepository _messagesRepository;
     private readonly ITokenCounter _tokenCounter;
     private readonly AzureOpenAiSettings _azureOpenAi;
+    private readonly PromptCatalog _prompts;
 
     public ShrinkMessage(
         IOpenAIService openAiService,
         ITokenCounter tokenCounter,
         ILogger<ShrinkMessage> logger,
         ITelegramMessageRepository messagesRepository,
-        AzureOpenAiSettings azureOpenAi)
+        AzureOpenAiSettings azureOpenAi, PromptCatalog? prompts = null)
     {
         _openAiService = openAiService;
         _tokenCounter = tokenCounter;
         _logger = logger;
         _messagesRepository = messagesRepository;
         _azureOpenAi = azureOpenAi;
+        _prompts = prompts ?? PromptCatalog.Load();
     }
 
     [Function("ShrinkMessage")]
@@ -98,13 +100,8 @@ public class ShrinkMessage
         var completionResult = await _openAiService.ChatCompletion.CreateCompletion(
             _azureOpenAi.Chat.CreateRequest(
                 [
-                    ChatMessage.FromSystem("Assistant is an intelligent chatbot designed to shrink chat messages, so that the messages will be used later to feed chat GPT api."
-                            + "Instructions:"
-                            + "- Chat language is Russian."
-                            + "- Keep context as close as possible."
-                            + "- Do not remove mentions starting with @."
-                            + "- Do not remove links."),
-                    ChatMessage.FromUser("Shrink the message: " + msg.Message),
+                    ChatMessage.FromSystem(_prompts.Summaries.ShrinkSystem),
+                    ChatMessage.FromUser(_prompts.Summaries.ShrinkUserPrefix + msg.Message),
                 ],
                 _azureOpenAi.ChatDeployment, _tokenCounter, msg.User),
             _azureOpenAi.ChatDeployment);

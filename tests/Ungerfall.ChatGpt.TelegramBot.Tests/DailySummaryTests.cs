@@ -39,7 +39,7 @@ public class DailySummaryTest
         }).ToList();
 
         chatsMock.Get().Returns(ImmutableHashSet.Create(chatId));
-        whitelistMock.GetSystemRoleMessage(chatId).Returns("System role");
+        whitelistMock.GetSummarySystemRoleMessage(chatId).Returns("System role");
         messageRepoMock.Get(chatId, Arg.Any<DateOnly>(), Arg.Any<CancellationToken>())
             .Returns(messages.OrderByDescending(x => x.Date).ToAsyncEnumerable());
         openAiServiceMock.ChatCompletion.CreateCompletion(
@@ -95,7 +95,7 @@ public class DailySummaryTest
         var summary = "*" + new string('a', 4094) + "😀" + new string('b', 4100);
 
         chatsMock.Get().Returns(ImmutableHashSet.Create(chatId));
-        whitelistMock.GetSystemRoleMessage(chatId).Returns("System role");
+        whitelistMock.GetSummarySystemRoleMessage(chatId).Returns("System role");
         messageRepoMock.Get(chatId, Arg.Any<DateOnly>(), Arg.Any<CancellationToken>())
             .Returns(new List<TelegramMessage>
             {
