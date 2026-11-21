@@ -130,7 +130,7 @@ internal sealed class NaturalRequestScenario : IDisposable
     public const string BotRequest = "Неплохо, но хотелось бы знать мнение бота";
     private const long ChatId = 123;
     private readonly string? _previousPolicy = Environment.GetEnvironmentVariable("ConversationPolicyChats");
-    private readonly IOpenAIService _completion = Substitute.For<IOpenAIService>();
+    private readonly IOpenAIService _completion;
     public ITelegramBotClient Bot { get; } = Substitute.For<ITelegramBotClient>();
     public ConversationState State { get; } = new() { ChatId = ChatId, Id = "conversation-topic:0" };
     public ConversationBudget Budget { get; } = new()
@@ -140,8 +140,10 @@ internal sealed class NaturalRequestScenario : IDisposable
     };
     public UpdateHandler Handler { get; }
 
-    public NaturalRequestScenario(DecisionsClient decisions, ConversationPolicyOptions? options = null)
+    public NaturalRequestScenario(DecisionsClient decisions, ConversationPolicyOptions? options = null,
+        IOpenAIService? completion = null, AzureOpenAiSettings? azureSettings = null, string? systemPrompt = null)
     {
+        _completion = completion ?? Substitute.For<IOpenAIService>();
         options ??= new ConversationPolicyOptions
         {
             DecisionsEnabled = true, NaturalRequestsEnabled = true,
@@ -161,18 +163,19 @@ internal sealed class NaturalRequestScenario : IDisposable
         var tokens = Substitute.For<ITokenCounter>();
         var whitelist = Substitute.For<IWhitelist>();
         whitelist.IsGroupAllowedToUseBot(ChatId).Returns(true);
-        whitelist.GetSystemRoleMessage(ChatId).Returns("Answer the user's cooking question.");
-        _completion.ChatCompletion.CreateCompletion(Arg.Any<ChatCompletionCreateRequest>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(new ChatCompletionCreateResponse
-            {
-                Choices = [new ChatChoiceResponse { Message = ChatMessage.FromAssistant("Из творога можно приготовить ленивые вареники.") }],
-            });
+        whitelist.GetSystemRoleMessage(ChatId).Returns(systemPrompt ?? "Answer the user's cooking question.");
+        if (completion == null)
+            _completion.ChatCompletion.CreateCompletion(Arg.Any<ChatCompletionCreateRequest>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(new ChatCompletionCreateResponse
+                {
+                    Choices = [new ChatChoiceResponse { Message = ChatMessage.FromAssistant("Из творога можно приготовить ленивые вареники.") }],
+                });
         Bot.SendRequest<Message>(Arg.Any<SendRichMessageRequest>(), Arg.Any<CancellationToken>()).Returns(new Message
         {
             Id = 100, Chat = new Chat { Id = ChatId, Type = ChatType.Supergroup }, Date = DateTime.UtcNow,
             From = new User { Id = 999, FirstName = "Bot", IsBot = true, Username = "chatgpt_ungerfall_bot" },
         });
-        var azure = TestAzureSettings.Create();
+        var azure = azureSettings ?? TestAzureSettings.Create();
         Handler = new UpdateHandler(Bot, NullLogger<UpdateHandler>.Instance, _completion, messages, tokens,
             new TooLongDidNotReadToday(messages, tokens, new SummaryOpenAiClient(_completion, "test-summary"),
                 NullLogger<TooLongDidNotReadToday>.Instance, Bot, whitelist, Substitute.For<ITimedTaskExecutionRepository>(), azure),
@@ -212,6 +215,11 @@ internal sealed class NaturalRequestScenario : IDisposable
                 message.Content != null && message.Content.Contains(FoodQuestion))),
             Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
+
+    public Task AssertSentOneReply() =>
+        Bot.Received(1).SendRequest<Message>(
+            Arg.Is<SendRichMessageRequest>(request => request.ReplyParameters != null && request.ReplyParameters.MessageId == 3),
+            Arg.Any<CancellationToken>());
 
     public Task AssertNoReply() =>
         Bot.DidNotReceive().SendRequest<Message>(Arg.Any<SendRichMessageRequest>(), Arg.Any<CancellationToken>());

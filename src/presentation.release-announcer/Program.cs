@@ -38,8 +38,9 @@ try
         azure.SummaryDeployment, azure.Summary);
     using var telegram = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
     var bot = new TelegramBotClient(Required("TELEGRAM_BOT_TOKEN"), telegram);
-    var announcements = new ReleaseAnnouncementService(settings, new Whitelist(), new TestUsers(), repository,
-        new GitHubReleaseNotesSource(github, settings), summary, bot, new ReleaseLogger());
+    var prompts = PromptCatalog.Load();
+    var announcements = new ReleaseAnnouncementService(settings, new Whitelist(prompts), new TestUsers(), repository,
+        new GitHubReleaseNotesSource(github, settings), summary, bot, new ReleaseLogger(), prompts);
     using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
     await repository.ApproveDeployment(version, timeout.Token);
     for (var attempt = 1; attempt <= 3; attempt++)

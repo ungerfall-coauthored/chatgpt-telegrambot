@@ -15,8 +15,9 @@
     <PackageReference Include="Telegram.Bot" Version="22.10.3.3" />
   </ItemGroup>
   <ItemGroup>
-    <None Update="chatgpt-prompts.json">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    <None Update="prompts.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
   </ItemGroup>
 

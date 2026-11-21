@@ -8,6 +8,7 @@ It stores conversation history in Cosmos DB.
 
 - Automatically responds to messages mentioning the bot.
 - Stores conversation history in Cosmos DB for data persistence and retrieval.
+- `/systemprompt` shows the normal chat system prompt in an allowed group.
 - Sends typing events to indicate when the bot is processing a message.
 - Supports two deployment methods:
   - Polling background service.
@@ -21,6 +22,11 @@ It stores conversation history in Cosmos DB.
 See [Azure setup, live tests and fork deployment](docs/azure-setup.md).
 The fork's CI runs offline tests; deployment is manual, restricted to the fork's
 `master` branch, and requires a separately configured Azure test environment.
+
+Model instructions are configured in `src/application/prompts.json`. The
+file is published with each executable and validated at startup; changing it
+requires a new deployment. Group authorization is managed separately in
+`Whitelist.cs`. Summary personas are independent of normal chat personas.
 
 ## Contributing
 

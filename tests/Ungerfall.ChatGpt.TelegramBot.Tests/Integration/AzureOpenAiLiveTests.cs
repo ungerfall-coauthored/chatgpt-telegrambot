@@ -12,6 +12,26 @@ namespace Ungerfall.ChatGpt.TelegramBot.Tests.Integration;
 public class AzureOpenAiLiveTests
 {
     [SkippableFact]
+    public async Task DecisionAndConfiguredPersonaWorkThroughUpdateHandler()
+    {
+        Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");
+        var decisions = AzureDecisionsSettings.FromEnvironment();
+        Skip.IfNot(decisions.IsConfigured, "Azure Decisions deployment is not configured");
+        var azure = AzureOpenAiSettings.FromEnvironment();
+        var groupPrompt = PromptCatalog.Load().ChatSystem(-1001034436662);
+        var persona = "Ты участник общего чата друзей. " + groupPrompt[groupPrompt.IndexOf("Говори от себя", StringComparison.Ordinal)..];
+        using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+        using var service = new OpenAIService(azure.CreateOptions(azure.ChatDeployment));
+        using var scenario = new NaturalRequestScenario(
+            new DecisionsClient(http, NullLogger<DecisionsClient>.Instance, decisions),
+            completion: service, azureSettings: azure, systemPrompt: persona);
+
+        await scenario.Run();
+
+        await scenario.AssertSentOneReply();
+    }
+
+    [SkippableFact]
     public async Task DecisionPolicyDoesNotAnswerMereBotDiscussion()
     {
         Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");

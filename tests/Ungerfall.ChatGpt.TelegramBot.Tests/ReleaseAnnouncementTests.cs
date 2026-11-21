@@ -181,6 +181,21 @@ public class ReleaseAnnouncementTests
 
     [SkippableFact]
     [Trait("Category", "Integration")]
+    public async Task ConfiguredReleasePromptUsesRealAzureWithoutSendingTelegram()
+    {
+        Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");
+        var fixture = new Fixture();
+        fixture.Notes.GetTitles(Arg.Any<string?>(), Version, Arg.Any<CancellationToken>())
+            .Returns(["Improve the bot's handling of examples"]);
+        var azure = AzureOpenAiSettings.FromEnvironment();
+        using var summary = new SummaryOpenAiClient(new OpenAIService(azure.CreateOptions(azure.SummaryDeployment)),
+            azure.SummaryDeployment, azure.Summary);
+        Assert.True(await fixture.Create(summary: summary).Execute(default));
+        Assert.Single(fixture.Messages);
+    }
+
+    [SkippableFact]
+    [Trait("Category", "Integration")]
     public async Task PipelineAnnouncementUsesRealGitHubAndAzureSummaryWithoutSendingTelegram()
     {
         Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");

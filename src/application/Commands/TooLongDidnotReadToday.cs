@@ -21,7 +21,6 @@ using static System.Environment;
 namespace Ungerfall.ChatGpt.TelegramBot.Commands;
 public class TooLongDidNotReadToday
 {
-    private const string AskForTLDR = "Напиши TL;DR переписки маркированным списком.";
     private const int MaxConcurrentRequests = 4;
     private readonly ITelegramMessageRepository _history;
     private readonly ITokenCounter _tokenCounter;
@@ -31,6 +30,7 @@ public class TooLongDidNotReadToday
     private readonly IWhitelist _whitelist;
     private readonly ITimedTaskExecutionRepository _cache;
     private readonly AzureOpenAiSettings _azureOpenAi;
+    private readonly PromptCatalog _prompts;
 
     public TooLongDidNotReadToday(
         ITelegramMessageRepository history,
@@ -40,7 +40,8 @@ public class TooLongDidNotReadToday
         ITelegramBotClient botClient,
         IWhitelist whitelist,
         ITimedTaskExecutionRepository cache,
-        AzureOpenAiSettings azureOpenAi)
+        AzureOpenAiSettings azureOpenAi,
+        PromptCatalog? prompts = null)
     {
         _history = history;
         _tokenCounter = tokenCounter;
@@ -50,6 +51,7 @@ public class TooLongDidNotReadToday
         _whitelist = whitelist;
         _cache = cache;
         _azureOpenAi = azureOpenAi;
+        _prompts = prompts ?? PromptCatalog.Load();
     }
 
     public async Task<Message> Execute(
@@ -67,7 +69,7 @@ public class TooLongDidNotReadToday
         using var historyHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var requests = new List<ChatCompletionCreateRequest>();
         await foreach (var batch in ChatMessageBuilder.CreateBatches(
-            GetHistory(chatId, today, messageThreadId, historyHash, cancellation), _whitelist.GetSystemRoleMessage(chatId), AskForTLDR,
+            GetHistory(chatId, today, messageThreadId, historyHash, cancellation), _whitelist.GetSummarySystemRoleMessage(chatId), _prompts.Summaries.Tldr,
             _tokenCounter, cancellation, maxTokens: _azureOpenAi.Summary.InputTokens))
         {
             requests.Add(_azureOpenAi.Summary.CreateRequest(batch, _azureOpenAi.SummaryDeployment, _tokenCounter));
