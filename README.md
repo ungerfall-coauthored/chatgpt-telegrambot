@@ -28,6 +28,45 @@ file is published with each executable and validated at startup; changing it
 requires a new deployment. Group authorization is managed separately in
 `Whitelist.cs`. Summary personas are independent of normal chat personas.
 
+## Docking game
+
+Register a game for the bot with [@BotFather](https://t.me/BotFather), then set
+`DOCKING_GAME_SHORT_NAME` to its short name. Authorized users can send
+`/docking` and tap Play to open the existing
+[Docking site](https://ungerfall-coauthored.github.io/docking-game/). The
+game runs locally in the browser: two-player mode shares one device; it is
+not online multiplayer. With no short name configured, the command reports
+that the game is not configured.
+
+The opt-in live test uses the dedicated `@chatgpt_ungerfall_testing_bot`,
+requires an existing private chat with it, and consumes that bot's incoming
+updates. Stop any other poller and ensure the test bot has no webhook. In
+`src/presentation.azure-function/local.settings.json`, privately configure
+`IntegrationTests_TELEGRAM_BOT_TOKEN` and `BOOK_QUIZ_TEST_CHAT` (the private
+test chat ID). With `docking` registered for the test bot, run from the repo:
+
+```sh
+python - <<'PY'
+import json, os, subprocess
+values = json.load(open('src/presentation.azure-function/local.settings.json'))['Values']
+env = os.environ.copy()
+env.update({
+    'DOCKING_LIVE_TEST': '1',
+    'DOCKING_GAME_SHORT_NAME': 'docking',
+    'DOCKING_TEST_CHAT': values['BOOK_QUIZ_TEST_CHAT'],
+    'IntegrationTests_TELEGRAM_BOT_TOKEN': values['IntegrationTests_TELEGRAM_BOT_TOKEN'],
+})
+raise SystemExit(subprocess.call([
+    'dotnet', 'test', 'tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj',
+    '-c', 'Release', '--filter', 'Category=Integration&FullyQualifiedName~DockingGameLiveTests',
+], env=env))
+PY
+```
+
+In the test chat send `/docking`, then tap Play within five minutes. The test
+checks the real command and callback through the bot's Telegram client, but
+visually confirming the game opens and plays is a separate manual check.
+
 ## The Linux Programming Interface quiz series
 
 The Azure Function sends one ordered quiz at 06:00 UTC to each chat listed in

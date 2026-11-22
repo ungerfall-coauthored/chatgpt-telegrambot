@@ -35,6 +35,7 @@ public class UpdateHandler
     private readonly ConversationPolicy _conversationPolicy;
     private readonly AzureOpenAiSettings _azureOpenAi;
     private readonly PromptCatalog _prompts;
+    private readonly DockingGame _dockingGame;
 
     public UpdateHandler(
         ITelegramBotClient botClient,
@@ -66,6 +67,7 @@ public class UpdateHandler
         _personalSettingsCommand = personalSettingsCommand;
         _azureOpenAi = azureOpenAi;
         _prompts = prompts ?? PromptCatalog.Load();
+        _dockingGame = new DockingGame(botClient, Environment.GetEnvironmentVariable("DOCKING_GAME_SHORT_NAME"));
     }
 
     public async Task Handle(Update update, CancellationToken cancellation)
@@ -89,6 +91,8 @@ public class UpdateHandler
              { ChatMember: { } }         => UpdateType.ChatMember,
              { ChatJoinRequest: { } }    => UpdateType.ChatJoinRequest,
             */
+            { CallbackQuery: { GameShortName: { } game } query } when _dockingGame.Matches(game)
+                => BotOnGameCallback(query, cancellation),
             { CallbackQuery: { Data: { } data } query } when data.StartsWith("settings:", StringComparison.Ordinal)
                 => BotOnCallbackQueryReceived(query, cancellation),
             { Message: { } message } => BotOnMessageReceived(message, cancellation),
@@ -170,6 +174,7 @@ public class UpdateHandler
                 "/image" => _imageCommand.Execute(message, msgWithoutCommand, cancellation, BeforeSend),
                 "/settings" => _personalSettingsCommand.Execute(message, cancellation, BeforeSend),
                 "/systemprompt" => SendSystemPrompt(message, BeforeSend, cancellation),
+                "/docking" => _dockingGame.Execute(message, BeforeSend, cancellation),
                 "/tldrtoday" => _tooLongDidnotReadCommand.Execute(
                     message.Chat.Id, cancellation,
                     useRich: message.Chat.Type is ChatType.Group or ChatType.Supergroup,
@@ -223,6 +228,15 @@ public class UpdateHandler
             ? chat.Id == query.From.Id && _testUsers.Get().Contains(chat.Id)
             : chat.Type is ChatType.Group or ChatType.Supergroup && _whitelist.IsGroupAllowedToUseBot(chat.Id));
         return allowed ? _personalSettingsCommand.Execute(query, cancellation) : Task.CompletedTask;
+    }
+
+    private Task BotOnGameCallback(CallbackQuery query, CancellationToken cancellation)
+    {
+        var chat = query.Message?.Chat;
+        bool allowed = !query.From.IsBot && chat != null && (chat.Type == ChatType.Private
+            ? chat.Id == query.From.Id && _testUsers.Get().Contains(chat.Id)
+            : chat.Type is ChatType.Group or ChatType.Supergroup && _whitelist.IsGroupAllowedToUseBot(chat.Id));
+        return _dockingGame.Answer(query, allowed, cancellation);
     }
 
     private async Task<Message> OnMessageReceived(
