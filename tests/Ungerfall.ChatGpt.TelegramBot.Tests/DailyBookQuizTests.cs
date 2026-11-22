@@ -22,7 +22,7 @@ public class DailyBookQuizTests
         var quizzes = JsonSerializer.Deserialize<BookQuiz[]>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
         BookQuiz.ValidateBatch(quizzes);
         Assert.Equal(1, quizzes[0].Sequence);
-        Assert.All(quizzes, quiz => Assert.Contains($"p. {quiz.PrintedPage}", quiz.AnswerExplanation()));
+        Assert.All(quizzes, quiz => Assert.Contains($"с. {quiz.PrintedPage}", quiz.AnswerExplanation()));
     }
 
     [Fact]
@@ -58,9 +58,9 @@ public class DailyBookQuizTests
 
         Assert.NotNull(request);
         Assert.NotNull(request.Media);
-        Assert.Contains("Chapter 1", request.Description);
+        Assert.Contains("Глава 1", request.Description);
         Assert.Contains("client and server", request.Description);
-        Assert.Contains("The Linux Programming Interface, ch. 1, p. 4", request.Explanation);
+        Assert.Contains("The Linux Programming Interface, гл. 1, с. 4", request.Explanation);
         Assert.Equal(2, fixture.Progress.NextSequence);
         Assert.False(fixture.Progress.Sending);
         Assert.NotNull(fixture.Progress.LastSentUtc);

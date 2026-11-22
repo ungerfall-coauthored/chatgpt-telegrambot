@@ -2,6 +2,7 @@ using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Collections.Immutable;
+using System.Net;
 using Telegram.Bot;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
 using Ungerfall.ChatGpt.TelegramBot.Database;
@@ -26,6 +27,8 @@ public class BookQuizLiveTests
             DatabaseId = Required("CosmosDatabase"),
             TimedTasksContainerId = Required("CosmosTimedTasksContainer"),
         });
+        if (!options.Value.TimedTasksContainerId.StartsWith("tests-", StringComparison.Ordinal))
+            throw new InvalidOperationException("The live test requires a dedicated test container.");
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         using var cosmos = new CosmosClient(Required("CosmosDbConnectionString"),
             new CosmosClientOptions { Serializer = new CosmosSystemTextJsonSerializer() });
@@ -35,19 +38,28 @@ public class BookQuizLiveTests
             Id = BookQuiz.QuizId(1),
             ChatId = chatId,
             Sequence = 1,
-            Chapter = 1,
-            Section = "1.1",
-            PrintedPage = 4,
-            PdfPage = 48,
-            Question = "Which UNIX variant included the sockets API?",
-            Options = ["4.2BSD", "MS-DOS", "System III", "The original PDP-7 UNIX"],
+            Chapter = 2,
+            Section = "2.17",
+            PrintedPage = 40,
+            PdfPage = 84,
+            Question = "Кто на схеме отправляет запрос?",
+            Options = ["Клиент", "Сервер", "Файловая система", "Ядро"],
             CorrectOptionId = 0,
-            Explanation = "4.2BSD included TCP/IP and sockets.",
+            Explanation = "Клиент отправляет запрос, а сервер его обрабатывает.",
             ImageReference = image,
-            ImageDescription = "A test image."
+            ImageDescription = "Клиент отправляет запрос серверу."
         };
         quiz.Validate();
-        await container.CreateItemAsync(quiz, new PartitionKey(chatId), cancellationToken: timeout.Token);
+        var partition = new PartitionKey(chatId);
+        var progressId = "book-quiz-progress:" + BookQuiz.Series;
+        try
+        {
+            await container.ReadItemAsync<BookQuizProgress>(progressId, partition, cancellationToken: timeout.Token);
+            throw new InvalidOperationException("Test chat already has book quiz progress; use an empty test container.");
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound) { }
+        var created = await container.CreateItemAsync(quiz, partition, cancellationToken: timeout.Token);
+        await BookQuizIngestion.Import(container, [quiz], [chatId], timeout.Token);
         var chats = Substitute.For<BookQuizChats>();
         chats.Get().Returns(ImmutableHashSet.Create(chatId));
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
@@ -57,10 +69,14 @@ public class BookQuizLiveTests
 
         await task.Execute(timeout.Token);
 
-        var progress = (await container.ReadItemAsync<BookQuizProgress>(
-            "book-quiz-progress:" + BookQuiz.Series, new PartitionKey(chatId), cancellationToken: timeout.Token)).Resource;
+        var saved = await container.ReadItemAsync<BookQuizProgress>(progressId, partition, cancellationToken: timeout.Token);
+        var progress = saved.Resource;
         Assert.False(progress.Sending);
         Assert.Equal(2, progress.NextSequence);
         Assert.NotNull(progress.LastSentUtc);
+        await container.DeleteItemAsync<BookQuiz>(quiz.Id, partition,
+            new ItemRequestOptions { IfMatchEtag = created.ETag }, timeout.Token);
+        await container.DeleteItemAsync<BookQuizProgress>(progressId, partition,
+            new ItemRequestOptions { IfMatchEtag = saved.ETag }, timeout.Token);
     }
 }

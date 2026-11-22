@@ -56,7 +56,8 @@ if it was definitely not delivered, leave `nextSequence` unchanged. In either
 case set `sending` to false using an ETag-conditional update. Never retry
 blindly: Telegram delivery and Cosmos updates cannot be atomic.
 
-The opt-in live test sends a real image poll and writes persistent test data.
+The opt-in live test sends a real image poll and writes test data. It removes
+its own records after success; a failure can leave them behind for diagnosis.
 Use a dedicated empty test container and chat, and privately set
 `BOOK_QUIZ_LIVE_TEST=1`, `BOOK_QUIZ_TEST_CHAT`, `BOOK_QUIZ_TEST_IMAGE`,
 `IntegrationTests_TELEGRAM_BOT_TOKEN`, `CosmosDbConnectionString`,

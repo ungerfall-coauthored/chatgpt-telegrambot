@@ -5,10 +5,10 @@
     "section": "1.1",
     "printedPage": 4,
     "pdfPage": 48,
-    "question": "Which UNIX variant helped popularize the sockets API and TCP/IP networking?",
-    "options": ["4.2BSD", "MS-DOS", "System III", "The original PDP-7 UNIX"],
+    "question": "Какой вариант UNIX помог распространению API сокетов и сетевого стека TCP/IP?",
+    "options": ["4.2BSD", "MS-DOS", "System III", "Изначальная UNIX для PDP-7"],
     "correctOptionId": 0,
-    "explanation": "4.2BSD included TCP/IP, sockets, and networking tools."
+    "explanation": "В 4.2BSD входили TCP/IP, сокеты и сетевые утилиты."
   },
   {
     "sequence": 2,
@@ -16,10 +16,10 @@
     "section": "1.3.2",
     "printedPage": 12,
     "pdfPage": 56,
-    "question": "What does POSIX.1 primarily specify for a conforming operating system?",
-    "options": ["A set of programming interfaces", "One mandatory kernel implementation", "A particular desktop environment", "A single processor architecture"],
+    "question": "Что прежде всего определяет POSIX.1 для совместимой операционной системы?",
+    "options": ["Набор программных интерфейсов", "Единственную реализацию ядра", "Определённую графическую оболочку", "Одну архитектуру процессора"],
     "correctOptionId": 0,
-    "explanation": "POSIX.1 specifies interfaces, not a particular underlying implementation."
+    "explanation": "POSIX.1 определяет интерфейсы, а не конкретную реализацию системы."
   },
   {
     "sequence": 3,
@@ -27,10 +27,10 @@
     "section": "2.2",
     "printedPage": 25,
     "pdfPage": 69,
-    "question": "On Linux, where does a command shell normally run?",
-    "options": ["As a user-space process", "Inside the kernel", "Only inside a device driver", "Inside the file system"],
+    "question": "Где обычно выполняется командная оболочка в Linux?",
+    "options": ["Как пользовательский процесс", "Внутри ядра", "Только внутри драйвера устройства", "Внутри файловой системы"],
     "correctOptionId": 0,
-    "explanation": "A shell is a user process, separate from the kernel."
+    "explanation": "Оболочка — пользовательский процесс, отдельный от ядра."
   },
   {
     "sequence": 4,
@@ -38,9 +38,9 @@
     "section": "2.4",
     "printedPage": 27,
     "pdfPage": 71,
-    "question": "In the root directory, where does the parent entry '..' lead?",
-    "options": ["Back to the root directory", "To the user's home directory", "To /tmp", "Outside the directory hierarchy"],
+    "question": "Куда указывает запись родительского каталога '..' в корневом каталоге?",
+    "options": ["На сам корневой каталог", "На домашний каталог пользователя", "На /tmp", "За пределы дерева каталогов"],
     "correctOptionId": 0,
-    "explanation": "The root directory's parent entry refers to the root itself."
+    "explanation": "Запись '..' в корневом каталоге указывает на сам корень."
   }
 ]

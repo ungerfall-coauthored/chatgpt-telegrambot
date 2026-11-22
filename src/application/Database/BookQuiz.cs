@@ -27,7 +27,7 @@ public sealed class BookQuiz
 
     public static string QuizId(int sequence) => $"book-quiz:{Series}:{sequence:D6}";
 
-    public string AnswerExplanation() => $"{Explanation}\n{BookTitle}, ch. {Chapter}, p. {PrintedPage}.";
+    public string AnswerExplanation() => $"{Explanation}\n{BookTitle}, гл. {Chapter}, с. {PrintedPage}.";
 
     public void Validate()
     {

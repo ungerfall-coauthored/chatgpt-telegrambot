@@ -26,7 +26,7 @@ public sealed class DailyBookQuiz(BookQuizChats chats, IBookQuizRepository repo,
                 var reservation = await repo.TryBegin(chatId, now, cancellation);
                 if (reservation is not { } item) continue;
                 var quiz = item.Quiz;
-                var description = $"{BookQuiz.BookTitle} · Chapter {quiz.Chapter} · Question {quiz.Sequence}";
+                var description = $"{BookQuiz.BookTitle} · Глава {quiz.Chapter} · Вопрос {quiz.Sequence}";
                 if (quiz.ImageDescription != null) description += $"\n{quiz.ImageDescription}";
                 try
                 {
