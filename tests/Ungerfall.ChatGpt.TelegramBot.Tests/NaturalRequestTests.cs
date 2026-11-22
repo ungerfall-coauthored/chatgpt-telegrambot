@@ -128,21 +128,26 @@ internal sealed class NaturalRequestScenario : IDisposable
     public const string FoodQuestion = "Жрать охота. У меня есть творог. Что бы такое приготовить";
     public const string HumanSuggestion = "Сырники";
     public const string BotRequest = "Неплохо, но хотелось бы знать мнение бота";
-    private const long ChatId = 123;
+    private readonly long ChatId;
     private readonly string? _previousPolicy = Environment.GetEnvironmentVariable("ConversationPolicyChats");
     private readonly IOpenAIService _completion;
-    public ITelegramBotClient Bot { get; } = Substitute.For<ITelegramBotClient>();
-    public ConversationState State { get; } = new() { ChatId = ChatId, Id = "conversation-topic:0" };
-    public ConversationBudget Budget { get; } = new()
-    {
-        ChatId = ChatId, DateUtc = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-        AutonomousCandidates = 3, LastAutonomousUtc = DateTime.UtcNow,
-    };
+    public ITelegramBotClient Bot { get; }
+    public ConversationState State { get; }
+    public ConversationBudget Budget { get; }
     public UpdateHandler Handler { get; }
 
     public NaturalRequestScenario(DecisionsClient decisions, ConversationPolicyOptions? options = null,
-        IOpenAIService? completion = null, AzureOpenAiSettings? azureSettings = null, string? systemPrompt = null)
+        IOpenAIService? completion = null, AzureOpenAiSettings? azureSettings = null, string? systemPrompt = null,
+        ITelegramBotClient? bot = null, long chatId = 123)
     {
+        ChatId = chatId;
+        Bot = bot ?? Substitute.For<ITelegramBotClient>();
+        State = new ConversationState { ChatId = ChatId, Id = "conversation-topic:0" };
+        Budget = new ConversationBudget
+        {
+            ChatId = ChatId, DateUtc = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            AutonomousCandidates = 3, LastAutonomousUtc = DateTime.UtcNow,
+        };
         _completion = completion ?? Substitute.For<IOpenAIService>();
         options ??= new ConversationPolicyOptions
         {
@@ -170,11 +175,12 @@ internal sealed class NaturalRequestScenario : IDisposable
                 {
                     Choices = [new ChatChoiceResponse { Message = ChatMessage.FromAssistant("Из творога можно приготовить ленивые вареники.") }],
                 });
-        Bot.SendRequest<Message>(Arg.Any<SendRichMessageRequest>(), Arg.Any<CancellationToken>()).Returns(new Message
-        {
-            Id = 100, Chat = new Chat { Id = ChatId, Type = ChatType.Supergroup }, Date = DateTime.UtcNow,
-            From = new User { Id = 999, FirstName = "Bot", IsBot = true, Username = "chatgpt_ungerfall_bot" },
-        });
+        if (bot == null)
+            Bot.SendRequest<Message>(Arg.Any<SendRichMessageRequest>(), Arg.Any<CancellationToken>()).Returns(new Message
+            {
+                Id = 100, Chat = new Chat { Id = ChatId, Type = ChatType.Supergroup }, Date = DateTime.UtcNow,
+                From = new User { Id = 999, FirstName = "Bot", IsBot = true, Username = "chatgpt_ungerfall_bot" },
+            });
         var azure = azureSettings ?? TestAzureSettings.Create();
         Handler = new UpdateHandler(Bot, NullLogger<UpdateHandler>.Instance, _completion, messages, tokens,
             new TooLongDidNotReadToday(messages, tokens, new SummaryOpenAiClient(_completion, "test-summary"),

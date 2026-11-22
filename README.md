@@ -28,6 +28,43 @@ file is published with each executable and validated at startup; changing it
 requires a new deployment. Group authorization is managed separately in
 `Whitelist.cs`. Summary personas are independent of normal chat personas.
 
+## Docking game
+
+Register a game with the short name `docking` for the bot with
+[@BotFather](https://t.me/BotFather). Authorized users can send
+`/docking` and tap Play to open the existing
+[Docking site](https://ungerfall-coauthored.github.io/docking-game/). The
+game runs locally in the browser: two-player mode shares one device; it is
+not online multiplayer.
+
+The opt-in live test uses the dedicated `@chatgpt_ungerfall_testing_bot`,
+requires an existing private chat with it, and sends then deletes test messages.
+It does not consume updates or require a button press. In
+`src/presentation.azure-function/local.settings.json`, privately configure
+`IntegrationTests_TELEGRAM_BOT_TOKEN` and `BOOK_QUIZ_TEST_CHAT` (the private
+test chat ID). With `docking` registered for the test bot, run from the repo:
+
+```sh
+python - <<'PY'
+import json, os, subprocess
+values = json.load(open('src/presentation.azure-function/local.settings.json'))['Values']
+env = os.environ.copy()
+env.update({
+    'DOCKING_LIVE_TEST': '1',
+    'DOCKING_TEST_CHAT': values['BOOK_QUIZ_TEST_CHAT'],
+    'IntegrationTests_TELEGRAM_BOT_TOKEN': values['IntegrationTests_TELEGRAM_BOT_TOKEN'],
+})
+raise SystemExit(subprocess.call([
+    'dotnet', 'test', 'tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj',
+    '-c', 'Release', '--filter', 'Category=Integration&FullyQualifiedName~DockingGameLiveTests',
+], env=env))
+PY
+```
+
+The test sends a game through the real Telegram client and checks the API's
+rejection of an expired callback. Visually confirming the game opens and plays
+is a separate manual check.
+
 ## The Linux Programming Interface quiz series
 
 The Azure Function sends one ordered quiz at 06:00 UTC to each chat listed in

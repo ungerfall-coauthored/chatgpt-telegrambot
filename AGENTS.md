@@ -29,18 +29,27 @@ Inspect repository root for source layout.
 ## Validation and release gates
 
 - Before pushing, opening a PR, or merging external-service behavior changes,
-  run relevant live integration tests against the intended service/deployment
-  through the actual application client, including serialization,
-  authentication, response parsing, and the configured timeout.
+  run automated, non-interactive live integration tests against the intended
+  service through the actual application client, including serialization,
+  authentication, response parsing, and the configured timeout. Tests must not
+  require a person to send messages, press buttons, or approve prompts.
+- A dedicated test account or deployment may be used when it exercises the
+  same service contract and changed application path. Do not require production
+  credentials or production test messages solely because the test account is
+  separate. Accept a user's direct confirmation of their external registration
+  or setup as evidence of that prerequisite; do not demand credentials solely
+  to reconfirm it.
 - Offline tests, mocks, green CI that excludes integration tests, and skipped
   tests are not substitutes. Missing credentials, provisioning, configuration,
   or service access block publication: keep work local and report the blocker.
-  Never request secret values in chat.
+  Do not substitute human-interactive tests; never request secret values in chat.
 - Record commands, executed/passed counts, and the tested commit or exact local
   diff. Reviewers must verify evidence for the final integration code and
   require affected tests to be rerun after behavior/configuration changes.
-- Treat deployment-triggering pushes/merges as releases; verify hosted settings,
-  not just local settings. A user publication/deployment hold blocks pushes,
-  merges, release workflow runs, and re-enabling automatic deployment until
-  explicit release approval. Passing tests or receiving credentials is not
-  approval.
+- Treat deployment-triggering pushes/merges as releases; verify the hosted
+  settings and prerequisites required by the change, not just local settings.
+  Existing deployment and health checks may provide that evidence; do not
+  request unrelated settings or secrets. A user publication/deployment hold
+  blocks pushes, merges, release workflow runs, and re-enabling automatic
+  deployment until explicit release approval. Passing tests or receiving
+  credentials is not approval.
