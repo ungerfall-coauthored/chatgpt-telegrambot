@@ -67,7 +67,7 @@ public class UpdateHandler
         _personalSettingsCommand = personalSettingsCommand;
         _azureOpenAi = azureOpenAi;
         _prompts = prompts ?? PromptCatalog.Load();
-        _dockingGame = new DockingGame(botClient);
+        _dockingGame = new DockingGame(botClient, logger);
     }
 
     public async Task Handle(Update update, CancellationToken cancellation)

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Telegram.Bot;
+using Telegram.Bot.Exceptions;
 using Telegram.Bot.Requests;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
@@ -72,5 +73,27 @@ public class DockingGameTests
             },
         }, default);
         await scenario.Bot.DidNotReceive().SendRequest<bool>(Arg.Any<AnswerCallbackQueryRequest>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ExpiredGameCallbackDoesNotRetryTheUpdate()
+    {
+        using var http = new HttpClient();
+        using var scenario = new NaturalRequestScenario(new DecisionsClient(
+            http, NullLogger<DecisionsClient>.Instance, new AzureDecisionsSettings()));
+        scenario.Bot.SendRequest<bool>(Arg.Any<AnswerCallbackQueryRequest>(), Arg.Any<CancellationToken>())
+            .Returns(_ => Task.FromException<bool>(new ApiRequestException("Expired callback", 400)));
+
+        await scenario.Handler.Handle(new Update
+        {
+            CallbackQuery = new CallbackQuery
+            {
+                Id = "expired", GameShortName = "docking",
+                From = new User { Id = 1, FirstName = "Player" },
+                Message = new Message { Chat = new Chat { Id = 123, Type = ChatType.Supergroup } },
+            },
+        }, default);
+
+        await scenario.Bot.Received(1).SendRequest<bool>(Arg.Any<AnswerCallbackQueryRequest>(), Arg.Any<CancellationToken>());
     }
 }

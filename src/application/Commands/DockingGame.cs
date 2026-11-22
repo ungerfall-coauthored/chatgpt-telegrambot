@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types;
@@ -12,10 +13,12 @@ public sealed class DockingGame
     public const string GameUrl = "https://ungerfall-coauthored.github.io/docking-game/";
     public const string ShortName = "docking";
     private readonly ITelegramBotClient _botClient;
+    private readonly ILogger _logger;
 
-    public DockingGame(ITelegramBotClient botClient)
+    public DockingGame(ITelegramBotClient botClient, ILogger logger)
     {
         _botClient = botClient;
+        _logger = logger;
     }
 
     public bool Matches(string? shortName) => string.Equals(ShortName, shortName, StringComparison.Ordinal);
@@ -40,8 +43,15 @@ public sealed class DockingGame
 
     public async Task Answer(CallbackQuery query, bool allowed, CancellationToken cancellation)
     {
-        await _botClient.AnswerCallbackQuery(query.Id,
-            text: allowed ? null : "Игра недоступна в этом чате.",
-            showAlert: !allowed, url: allowed ? GameUrl : null, cancellationToken: cancellation);
+        try
+        {
+            await _botClient.AnswerCallbackQuery(query.Id,
+                text: allowed ? null : "Игра недоступна в этом чате.",
+                showAlert: !allowed, url: allowed ? GameUrl : null, cancellationToken: cancellation);
+        }
+        catch (ApiRequestException ex) when (ex.ErrorCode is 400 or 403 or 404)
+        {
+            _logger.LogWarning("Unable to answer game callback: Telegram error {ErrorCode}", ex.ErrorCode);
+        }
     }
 }
