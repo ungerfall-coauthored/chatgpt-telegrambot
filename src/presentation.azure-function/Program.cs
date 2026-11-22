@@ -76,11 +76,13 @@ namespace Ungerfall.ChatGpt.TelegramBot.AzureFunction
                    s.AddScoped<ConversationPolicy>();
                    s.AddSingleton<ConversationPolicyChats>();
                    s.AddScoped<ITimedTaskExecutionRepository, TimedTaskExecutionRepository>();
+                   s.AddScoped<IBookQuizRepository, BookQuizRepository>();
                    s.AddScoped<ITokenCounter, TokenCounter>();
                    s.AddScoped<IWhitelist, Whitelist>();
                    s.AddScoped<TooLongDidNotReadToday>();
                    s.AddScoped<DailySummary>();
                    s.AddScoped<DailyQuiz>();
+                   s.AddScoped<DailyBookQuiz>();
                    s.AddScoped<DailyFilmsQuiz>();
                    s.AddScoped<DailyVideoGamesQuiz>();
                    s.AddScoped<GenerateImage>();
@@ -88,6 +90,7 @@ namespace Ungerfall.ChatGpt.TelegramBot.AzureFunction
                    s.AddScoped<UpdateHandler>();
                    s.AddSingleton<TestUsers>();
                    s.AddSingleton<QuizChats>();
+                   s.AddSingleton<BookQuizChats>();
                    s.AddSingleton<DailySummaryChats>();
                })
                .Build();
