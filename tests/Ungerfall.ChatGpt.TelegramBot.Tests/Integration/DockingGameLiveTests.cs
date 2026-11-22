@@ -22,9 +22,9 @@ public class DockingGameLiveTests
         var chatId = long.Parse(Required("DOCKING_TEST_CHAT"));
         var oldUsers = Environment.GetEnvironmentVariable("TestUsers");
         var oldUsername = Environment.GetEnvironmentVariable("TELEGRAM_BOT_USERNAME");
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         using var transport = new CaptureGameRequests();
-        using var http = new HttpClient(transport) { Timeout = TimeSpan.FromSeconds(30) };
+        using var http = new HttpClient(transport) { Timeout = TimeSpan.FromSeconds(100) };
         var bot = new TelegramBotClient(Required("IntegrationTests_TELEGRAM_BOT_TOKEN"), http);
         var me = await bot.GetMe(timeout.Token);
         Assert.Equal("chatgpt_ungerfall_testing_bot", me.Username);

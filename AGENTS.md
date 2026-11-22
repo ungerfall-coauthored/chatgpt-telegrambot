@@ -36,7 +36,9 @@ Inspect repository root for source layout.
 - A dedicated test account or deployment may be used when it exercises the
   same service contract and changed application path. Do not require production
   credentials or production test messages solely because the test account is
-  separate; verify distinct production-specific prerequisites separately.
+  separate. Accept a user's direct confirmation of their external registration
+  or setup as evidence of that prerequisite; do not demand credentials solely
+  to reconfirm it.
 - Offline tests, mocks, green CI that excludes integration tests, and skipped
   tests are not substitutes. Missing credentials, provisioning, configuration,
   or service access block publication: keep work local and report the blocker.
