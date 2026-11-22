@@ -46,12 +46,23 @@ var fileOption = new Option<FileInfo?>(
     }
     """);
 var rootCommand = new RootCommand("Quiz ingestion");
+var bookOption = new Option<bool>("--book-series", "Ingest ordered The Linux Programming Interface quizzes");
 rootCommand.AddOption(fileOption);
-rootCommand.SetHandler(async file =>
+rootCommand.AddOption(bookOption);
+rootCommand.SetHandler(async (file, bookSeries) =>
 {
     if (file is null)
     {
         return;
+    }
+
+    BookQuiz[]? bookQuizzes = null;
+    if (bookSeries)
+    {
+        using var input = file.OpenRead();
+        bookQuizzes = JsonSerializer.Deserialize(input, QuizContext.Default.BookQuizArray)
+            ?? throw new ArgumentException("Cannot deserialize book quizzes");
+        BookQuiz.ValidateBatch(bookQuizzes);
     }
 
     var cosmosDbConn = MaskInput("Enter your cosmos db connection string");
@@ -64,6 +75,12 @@ rootCommand.SetHandler(async file =>
             MaxRetryAttemptsOnRateLimitedRequests = 3,
             Serializer = new CosmosSystemTextJsonSerializer(),
         });
+    if (bookQuizzes != null)
+    {
+        var container = cosmosClient.GetContainer("telegram-bot", "timedTaskExecutions");
+        await BookQuizIngestion.Import(container, bookQuizzes, chats, default);
+        return;
+    }
     using var sr = file.OpenRead();
     QuizSource[] quizzes = JsonSerializer.Deserialize(sr, typeof(QuizSource[]), QuizContext.Default) as QuizSource[]
         ?? throw new ArgumentException("Cannot deserialize file");
@@ -116,7 +133,7 @@ rootCommand.SetHandler(async file =>
         Console.WriteLine();
         return password;
     }
-}, fileOption);
+}, fileOption, bookOption);
 
 await rootCommand.InvokeAsync(args);
 
@@ -134,4 +151,7 @@ internal sealed class QuizSource
 
 [JsonSerializable(typeof(QuizSource))]
 [JsonSerializable(typeof(QuizSource[]))]
+[JsonSerializable(typeof(BookQuiz))]
+[JsonSerializable(typeof(BookQuiz[]))]
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 internal partial class QuizContext : JsonSerializerContext;

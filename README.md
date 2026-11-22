@@ -28,6 +28,44 @@ file is published with each executable and validated at startup; changing it
 requires a new deployment. Group authorization is managed separately in
 `Whitelist.cs`. Summary personas are independent of normal chat personas.
 
+## The Linux Programming Interface quiz series
+
+The Azure Function sends one ordered quiz at 06:00 UTC to each chat listed in
+`BookQuizChats` (comma-separated numeric IDs). The series is disabled when
+that setting is absent or empty; it is separate from the existing quiz queues.
+The worker does not schedule this task. To import the small pilot, run:
+
+```sh
+dotnet run --project src/utils.quiz-ingestion/from-file -- --file data/linux-programming-interface-pilot.json --book-series
+```
+
+The importer prompts for the Cosmos connection string and chat IDs and uses
+the existing `telegram-bot` database and `timedTaskExecutions` container. It
+validates contiguous order within each batch and safely accepts an identical
+re-import; changed entries are not overwritten. Append later batches with
+continuing sequence numbers. Each quiz needs a printed page and PDF page;
+optional `imageReference` (Telegram file ID or HTTPS URL) requires
+`imageDescription`. Images appear in the poll description.
+
+A missing next sequence stops the series instead of skipping ahead. An
+unconfirmed send also stops it: after checking Telegram, an operator must
+disable the series, reconcile the `book-quiz-progress:linux-programming-interface`
+document in that chat's Cosmos partition, then re-enable it. If the poll was
+delivered, increment `nextSequence` and set `lastSentUtc` to the delivery time;
+if it was definitely not delivered, leave `nextSequence` unchanged. In either
+case set `sending` to false using an ETag-conditional update. Never retry
+blindly: Telegram delivery and Cosmos updates cannot be atomic.
+
+The opt-in live test sends a real image poll and writes persistent test data.
+Use a dedicated empty test container and chat, and privately set
+`BOOK_QUIZ_LIVE_TEST=1`, `BOOK_QUIZ_TEST_CHAT`, `BOOK_QUIZ_TEST_IMAGE`,
+`IntegrationTests_TELEGRAM_BOT_TOKEN`, `CosmosDbConnectionString`,
+`CosmosDatabase`, and `CosmosTimedTasksContainer`. Run:
+
+```sh
+dotnet test tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj -c Release --filter 'Category=Integration&FullyQualifiedName~BookQuizLiveTests'
+```
+
 ## Contributing
 
 Feel free to create issues or submit pull requests for any improvements or bug fixes you would like to contribute.
