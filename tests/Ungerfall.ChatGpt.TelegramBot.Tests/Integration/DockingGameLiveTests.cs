@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
+using Ungerfall.ChatGpt.TelegramBot.Commands;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Tests.Integration;
@@ -18,7 +19,6 @@ public class DockingGameLiveTests
             Environment.GetEnvironmentVariable(name) ?? throw new InvalidOperationException($"{name} is required");
 
         var chatId = long.Parse(Required("DOCKING_TEST_CHAT"));
-        var shortName = Required("DOCKING_GAME_SHORT_NAME");
         var oldUsers = Environment.GetEnvironmentVariable("TestUsers");
         var oldUsername = Environment.GetEnvironmentVariable("TELEGRAM_BOT_USERNAME");
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -53,7 +53,7 @@ public class DockingGameLiveTests
                         commandId = message.Id;
                     }
                     else if (commandId != null && update.CallbackQuery is { } query
-                        && query.From.Id == chatId && query.GameShortName == shortName
+                        && query.From.Id == chatId && query.GameShortName == DockingGame.ShortName
                         && query.Message?.Chat.Id == chatId && query.Message.ReplyToMessage?.Id == commandId)
                     {
                         await scenario.Handler.Handle(update, timeout.Token);

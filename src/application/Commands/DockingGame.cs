@@ -10,31 +10,22 @@ namespace Ungerfall.ChatGpt.TelegramBot.Commands;
 public sealed class DockingGame
 {
     public const string GameUrl = "https://ungerfall-coauthored.github.io/docking-game/";
+    public const string ShortName = "docking";
     private readonly ITelegramBotClient _botClient;
-    private readonly string? _shortName;
 
-    public DockingGame(ITelegramBotClient botClient, string? shortName)
+    public DockingGame(ITelegramBotClient botClient)
     {
         _botClient = botClient;
-        _shortName = string.IsNullOrWhiteSpace(shortName) ? null : shortName.Trim();
     }
 
-    public bool Matches(string? shortName) => _shortName != null
-        && string.Equals(_shortName, shortName, StringComparison.Ordinal);
+    public bool Matches(string? shortName) => string.Equals(ShortName, shortName, StringComparison.Ordinal);
 
     public async Task Execute(Message message, Func<Task> beforeSend, CancellationToken cancellation)
     {
         await beforeSend();
-        if (_shortName == null)
-        {
-            await _botClient.SendResponse(message.Chat.Id, "Игра пока не настроена.",
-                replyParameters: message.Id, messageThreadId: message.MessageThreadId, cancellationToken: cancellation);
-            return;
-        }
-
         try
         {
-            await _botClient.SendGame(message.Chat.Id, _shortName, replyParameters: message.Id,
+            await _botClient.SendGame(message.Chat.Id, ShortName, replyParameters: message.Id,
                 messageThreadId: message.MessageThreadId, cancellationToken: cancellation);
         }
         catch (ApiRequestException ex) when (TelegramDeliveryRejectedException.IsDefiniteRejection(ex))

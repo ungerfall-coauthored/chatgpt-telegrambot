@@ -30,13 +30,12 @@ requires a new deployment. Group authorization is managed separately in
 
 ## Docking game
 
-Register a game for the bot with [@BotFather](https://t.me/BotFather), then set
-`DOCKING_GAME_SHORT_NAME` to its short name. Authorized users can send
+Register a game with the short name `docking` for the bot with
+[@BotFather](https://t.me/BotFather). Authorized users can send
 `/docking` and tap Play to open the existing
 [Docking site](https://ungerfall-coauthored.github.io/docking-game/). The
 game runs locally in the browser: two-player mode shares one device; it is
-not online multiplayer. With no short name configured, the command reports
-that the game is not configured.
+not online multiplayer.
 
 The opt-in live test uses the dedicated `@chatgpt_ungerfall_testing_bot`,
 requires an existing private chat with it, and consumes that bot's incoming
@@ -52,7 +51,6 @@ values = json.load(open('src/presentation.azure-function/local.settings.json'))[
 env = os.environ.copy()
 env.update({
     'DOCKING_LIVE_TEST': '1',
-    'DOCKING_GAME_SHORT_NAME': 'docking',
     'DOCKING_TEST_CHAT': values['BOOK_QUIZ_TEST_CHAT'],
     'IntegrationTests_TELEGRAM_BOT_TOKEN': values['IntegrationTests_TELEGRAM_BOT_TOKEN'],
 })
