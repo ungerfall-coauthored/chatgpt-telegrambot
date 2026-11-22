@@ -38,8 +38,8 @@ game runs locally in the browser: two-player mode shares one device; it is
 not online multiplayer.
 
 The opt-in live test uses the dedicated `@chatgpt_ungerfall_testing_bot`,
-requires an existing private chat with it, and consumes that bot's incoming
-updates. Stop any other poller and ensure the test bot has no webhook. In
+requires an existing private chat with it, and sends then deletes test messages.
+It does not consume updates or require a button press. In
 `src/presentation.azure-function/local.settings.json`, privately configure
 `IntegrationTests_TELEGRAM_BOT_TOKEN` and `BOOK_QUIZ_TEST_CHAT` (the private
 test chat ID). With `docking` registered for the test bot, run from the repo:
@@ -61,9 +61,9 @@ raise SystemExit(subprocess.call([
 PY
 ```
 
-In the test chat send `/docking`, then tap Play within five minutes. The test
-checks the real command and callback through the bot's Telegram client, but
-visually confirming the game opens and plays is a separate manual check.
+The test sends a game through the real Telegram client and checks the API's
+rejection of an expired callback. Visually confirming the game opens and plays
+is a separate manual check.
 
 ## The Linux Programming Interface quiz series
 
