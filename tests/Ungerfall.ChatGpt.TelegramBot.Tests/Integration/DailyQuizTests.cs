@@ -38,6 +38,7 @@ public class DailyQuizTests
                 Type = "some-type",
                 Explanation = "cool",
                 Id = Guid.NewGuid().ToString(),
+                ETag = "\"test\"",
             });
         repo.CompleteQuiz(Arg.Any<Database.TimedTaskQuiz>(), default)
             .ReturnsForAnyArgs(Task.CompletedTask);

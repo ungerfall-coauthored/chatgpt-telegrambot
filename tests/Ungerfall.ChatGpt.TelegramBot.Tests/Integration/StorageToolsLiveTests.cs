@@ -47,7 +47,12 @@ public class StorageToolsLiveTests
         var id = listed.GetProperty("id").GetString()!;
         var version = listed.GetProperty("version").GetString()!;
         var scheduler = new TimedTaskExecutionRepository(fixture.Cosmos, fixture.Options);
-        Assert.Equal(id, (await scheduler.GetQuiz(fixture.ChatId, TimedTaskQuiz.Type_ComputerScience, fixture.Token))!.Id);
+        var storageContainer = fixture.Cosmos.GetContainer(fixture.Options.Value.DatabaseId, fixture.Options.Value.TimedTasksContainerId);
+        await storageContainer.PatchItemAsync<TimedTaskQuiz>(id, new PartitionKey(fixture.ChatId),
+            new[] { PatchOperation.Set("/customMetadata", "preserve") }, cancellationToken: fixture.Token);
+        var withMetadata = await tools.ExecuteAsync("storage_get",
+            JsonSerializer.Serialize(new { dataset = "quiz_questions", id }), context, 0, fixture.Token);
+        version = Data(withMetadata).GetProperty("version").GetString()!;
 
         var invalid = await tools.ExecuteAsync("storage_list",
             """{"dataset":"quiz_questions","predicate":"c.question =","limit":1}""", context, 0, fixture.Token);
@@ -69,6 +74,14 @@ public class StorageToolsLiveTests
             record = JsonSerializer.Deserialize<JsonElement>(Quiz.Replace("TCP", "UDP"))
         });
         Assert.Equal("ok", (await tools.ExecuteAsync("storage_update", update, fixture.Context(2, "Update"), 1, fixture.Token)).Status);
+        var rawUpdated = await storageContainer.ReadItemAsync<JsonElement>(id, new PartitionKey(fixture.ChatId),
+            cancellationToken: fixture.Token);
+        Assert.Equal("preserve", rawUpdated.Resource.GetProperty("customMetadata").GetString());
+        using var staleBatch = await storageContainer.CreateTransactionalBatch(new PartitionKey(fixture.ChatId))
+            .PatchItem(id, new[] { PatchOperation.Set("/question", "stale overwrite") },
+                new TransactionalBatchPatchItemRequestOptions { IfMatchEtag = $"\"{version}\"" })
+            .ExecuteAsync(fixture.Token);
+        Assert.Equal(HttpStatusCode.PreconditionFailed, staleBatch.StatusCode);
         Assert.Equal("conflict", (await tools.ExecuteAsync("storage_update", update, fixture.Context(3, "Stale update"), 1, fixture.Token)).Code);
         var read = await tools.ExecuteAsync("storage_get", JsonSerializer.Serialize(new { dataset = "quiz_questions", id }),
             context, 0, fixture.Token);
@@ -83,8 +96,35 @@ public class StorageToolsLiveTests
         Assert.Equal("not_found", (await tools.ExecuteAsync("storage_get",
             JsonSerializer.Serialize(new { dataset = "quiz_questions", id }), context, 0, fixture.Token)).Code);
         Assert.Equal("ok", (await tools.ExecuteAsync("storage_create", create, fixture.Context(4, "create posted fixture"), 2, fixture.Token)).Status);
+        var fixtureId = $"tool-quiz:{StorageTools.AdministratorUserId}:4:2:0";
+        var container = fixture.Cosmos.GetContainer(fixture.Options.Value.DatabaseId, fixture.Options.Value.TimedTasksContainerId);
+        await container.PatchItemAsync<TimedTaskQuiz>(fixtureId, new PartitionKey(fixture.ChatId),
+            new[] { PatchOperation.Set("/customMetadata", "preserve after delivery") }, cancellationToken: fixture.Token);
+        var beforeReservation = await container.ReadItemAsync<TimedTaskQuiz>(fixtureId,
+            new PartitionKey(fixture.ChatId), cancellationToken: fixture.Token);
         var posted = await scheduler.GetQuiz(fixture.ChatId, TimedTaskQuiz.Type_ComputerScience, fixture.Token);
+        Assert.NotNull(posted);
+        var staleReservation = await Assert.ThrowsAsync<CosmosException>(() =>
+            container.PatchItemAsync<TimedTaskQuiz>(fixtureId, new PartitionKey(fixture.ChatId),
+                new[] { PatchOperation.Set("/deliveryPending", true) },
+                new PatchItemRequestOptions { IfMatchEtag = beforeReservation.ETag }, fixture.Token));
+        Assert.Equal(HttpStatusCode.PreconditionFailed, staleReservation.StatusCode);
+        var pendingRead = await tools.ExecuteAsync("storage_get",
+            JsonSerializer.Serialize(new { dataset = "quiz_questions", id = posted.Id }), context, 0, fixture.Token);
+        Assert.True(Data(pendingRead).GetProperty("deliveryPending").GetBoolean());
+        var pendingDelete = JsonSerializer.Serialize(new
+        {
+            dataset = "quiz_questions", id = posted.Id, version = Data(pendingRead).GetProperty("version").GetString()
+        });
+        Assert.Equal("forbidden", (await tools.ExecuteAsync("storage_delete", pendingDelete,
+            fixture.Context(4, "delete reserved fixture"), 3, fixture.Token)).Code);
+        Assert.Equal("ok", (await tools.ExecuteAsync("storage_create", create, fixture.Context(4, "create next fixture"), 4, fixture.Token)).Status);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            scheduler.GetQuiz(fixture.ChatId, TimedTaskQuiz.Type_ComputerScience, fixture.Token));
         await scheduler.CompleteQuiz(posted!, fixture.Token);
+        var afterDelivery = await container.ReadItemAsync<JsonElement>(fixtureId, new PartitionKey(fixture.ChatId),
+            cancellationToken: fixture.Token);
+        Assert.Equal("preserve after delivery", afterDelivery.Resource.GetProperty("customMetadata").GetString());
         var postedRead = await tools.ExecuteAsync("storage_get",
             JsonSerializer.Serialize(new { dataset = "quiz_questions", id = posted!.Id }), context, 0, fixture.Token);
         var postedDelete = JsonSerializer.Serialize(new
@@ -95,6 +135,7 @@ public class StorageToolsLiveTests
         });
         Assert.Equal("forbidden", (await tools.ExecuteAsync("storage_delete", postedDelete,
             fixture.Context(4, "delete posted fixture"), 3, fixture.Token)).Code);
+        Assert.NotNull(await scheduler.GetQuiz(fixture.ChatId, TimedTaskQuiz.Type_ComputerScience, fixture.Token));
     }
 
     [SkippableFact]
@@ -193,7 +234,8 @@ public class StorageToolsLiveTests
         var result = await client.CompleteAsync(azure.Chat.CreateRequest([ChatMessage.FromUser(request)], azure.ChatDeployment)
             with
         { StorageContext = fixture.Context(1, request) }, fixture.Token);
-        Assert.True(result.Successful, result.ErrorType);
+        Assert.True(result.Successful, $"{result.ErrorType}: {result.ErrorMessage}; "
+            + string.Join(", ", recording.Operations.Zip(recording.Results, (operation, item) => $"{operation}:{item.Status}:{item.Code}")));
         Assert.Contains(recording.Results, result => result.Code == "invalid_query");
         Assert.Contains(recording.Results, result => result.Status == "ok");
         Assert.All(recording.Operations, operation => Assert.Equal("storage_list", operation));
@@ -253,6 +295,8 @@ public class StorageToolsLiveTests
             try
             {
                 var allowedIds = new HashSet<string>();
+                allowedIds.UnionWith(new[] { $"quiz-delivery-lock:{TimedTaskQuiz.Type_ComputerScience}",
+                    $"quiz-delivery-lock:{TimedTaskQuiz.Type_Films}", $"quiz-delivery-lock:{TimedTaskQuiz.Type_VideoGames}" });
                 for (var message = 1; message <= 4; message++)
                     for (var operation = 1; operation <= 12; operation++)
                     {

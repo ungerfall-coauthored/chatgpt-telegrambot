@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
@@ -75,6 +76,20 @@ public class TimedTaskExecutionRepository(
     public async Task<TimedTaskQuiz?> GetQuiz(long chatId, string type, CancellationToken cancellation)
     {
         var container = cosmos.GetContainer(_cosmosDbOptions.DatabaseId, _cosmosDbOptions.TimedTasksContainerId);
+        var partition = new PartitionKey(chatId);
+        var lockId = $"quiz-delivery-lock:{type}";
+        ItemResponse<JsonElement> deliveryLock;
+        try
+        {
+            deliveryLock = await container.CreateItemAsync(JsonSerializer.SerializeToElement(new
+            {
+                id = lockId, chatId, type = "quiz-delivery-lock"
+            }), partition, cancellationToken: cancellation);
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            throw new InvalidOperationException("Quiz delivery is already pending; manual reconciliation may be required.", ex);
+        }
         var query = new QueryDefinition(@"SELECT * FROM c
                 WHERE (NOT IS_DEFINED(c.posted) OR c.posted = false)
                     AND c.chatId = @chatId
@@ -93,18 +108,38 @@ public class TimedTaskExecutionRepository(
         while (it.HasMoreResults)
         {
             FeedResponse<TimedTaskQuiz> response = await it.ReadNextAsync(cancellation);
-            return response.FirstOrDefault();
+            var candidate = response.FirstOrDefault();
+            if (candidate == null) break;
+            var current = await container.ReadItemAsync<TimedTaskQuiz>(candidate.Id, new PartitionKey(chatId),
+                cancellationToken: cancellation);
+            if (current.Resource.Posted || current.Resource.Type != type || current.Resource.DeliveryPending)
+                throw new InvalidOperationException("Quiz is already posted or its delivery is pending; manual reconciliation may be required.");
+            var reserved = await container.PatchItemAsync<TimedTaskQuiz>(candidate.Id, new PartitionKey(chatId),
+                new[] { PatchOperation.Set("/deliveryPending", true) },
+                new PatchItemRequestOptions { IfMatchEtag = current.ETag }, cancellation);
+            reserved.Resource.ETag = reserved.ETag;
+            reserved.Resource.DeliveryLockETag = deliveryLock.ETag;
+            return reserved.Resource;
         }
 
+        await container.DeleteItemAsync<JsonElement>(lockId, partition,
+            new ItemRequestOptions { IfMatchEtag = deliveryLock.ETag }, cancellation);
         return null;
     }
 
     public async Task CompleteQuiz(TimedTaskQuiz quiz, CancellationToken cancellation)
     {
         var container = cosmos.GetContainer(_cosmosDbOptions.DatabaseId, _cosmosDbOptions.TimedTasksContainerId);
-        quiz.Posted = true;
-        quiz.DateUtc = DateTime.UtcNow;
-        await container.ReplaceItemAsync(quiz, quiz.Id, new PartitionKey(quiz.ChatId), cancellationToken: cancellation);
+        var batch = container.CreateTransactionalBatch(new PartitionKey(quiz.ChatId));
+        batch.PatchItem(quiz.Id,
+            new[] { PatchOperation.Set("/posted", true), PatchOperation.Set("/deliveryPending", false),
+                PatchOperation.Set("/date", DateTime.UtcNow) },
+            new TransactionalBatchPatchItemRequestOptions { IfMatchEtag = quiz.ETag ?? throw new InvalidOperationException("Quiz was not reserved.") });
+        batch.DeleteItem($"quiz-delivery-lock:{quiz.Type}",
+            new TransactionalBatchItemRequestOptions { IfMatchEtag = quiz.DeliveryLockETag ?? throw new InvalidOperationException("Quiz delivery was not locked.") });
+        using var response = await batch.ExecuteAsync(cancellation);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Could not complete quiz delivery (HTTP {(int)response.StatusCode}); manual reconciliation is required.");
     }
 
     public async Task<TldrCache> BeginTldr(long chatId, string id, CancellationToken cancellation)

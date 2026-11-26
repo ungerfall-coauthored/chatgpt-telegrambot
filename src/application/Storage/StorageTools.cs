@@ -33,15 +33,15 @@ public sealed class StorageTools(IQuizStorage repository)
             """{"type":"object","properties":{},"required":[],"additionalProperties":false}"""),
         Define("storage_schema", "Get the quiz record schema and Cosmos SQL predicate rules.",
             """{"type":"object","properties":{"dataset":{"type":"string","enum":["quiz_questions"]}},"required":["dataset"],"additionalProperties":false}"""),
-        Define("storage_list", "Read at most 10 quiz records in the current chat. Supply a Cosmos SQL WHERE predicate, not KQL or a full SELECT. No pagination. Use c.question, c.type, c.explanation, c.correctOptionId, c.posted. Results include IDs and versions.",
+        Define("storage_list",         "Read at most 10 quiz records in the current chat. Supply a Cosmos SQL WHERE predicate, not KQL or a full SELECT. No pagination. Use c.question, c.type, c.explanation, c.correctOptionId, c.posted. Results include IDs and versions.",
             """{"type":"object","properties":{"dataset":{"type":"string","enum":["quiz_questions"]},"predicate":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":10}},"required":["dataset","predicate","limit"],"additionalProperties":false}"""),
         Define("storage_get", "Read one quiz record in the current chat, including its version.",
             """{"type":"object","properties":{"dataset":{"type":"string","enum":["quiz_questions"]},"id":{"type":"string"}},"required":["dataset","id"],"additionalProperties":false}"""),
         Define("storage_create", "Create 1-5 quiz questions atomically. Use only for an explicit request from the current user; discover schema first. IDs and chat are assigned by the server.",
             """{"type":"object","properties":{"dataset":{"type":"string","enum":["quiz_questions"]},"records":{"type":"array","minItems":1,"maxItems":5,"items":{"type":"object","properties":{"type":{"type":"string","enum":["quiz-type-cs","quiz-type-films"," quiz-type-videogames"]},"question":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"correctOptionId":{"type":"integer"},"explanation":{"type":"string"}},"required":["type","question","options","correctOptionId","explanation"],"additionalProperties":false}}},"required":["dataset","records"],"additionalProperties":false}"""),
-        Define("storage_update", "Replace a quiz's editable fields using its exact version from get/list. Posted quizzes are immutable. Requires an explicit current-user request.",
+        Define("storage_update",         "Replace a quiz's editable fields using its exact version from get/list. Posted quizzes and those pending scheduled delivery are immutable. Requires an explicit current-user request.",
             """{"type":"object","properties":{"dataset":{"type":"string","enum":["quiz_questions"]},"id":{"type":"string"},"version":{"type":"string"},"record":{"type":"object","properties":{"type":{"type":"string","enum":["quiz-type-cs","quiz-type-films"," quiz-type-videogames"]},"question":{"type":"string"},"options":{"type":"array","items":{"type":"string"}},"correctOptionId":{"type":"integer"},"explanation":{"type":"string"}},"required":["type","question","options","correctOptionId","explanation"],"additionalProperties":false}},"required":["dataset","id","version","record"],"additionalProperties":false}"""),
-        Define("storage_delete", "Delete one unposted quiz using its exact version. Only execute when the current user explicitly requests deletion of that record; ask for clarification when ambiguous.",
+        Define("storage_delete",         "Delete one unposted quiz not pending scheduled delivery using its exact version. Only execute when the current user explicitly requests deletion of that record; ask for clarification when ambiguous.",
             """{"type":"object","properties":{"dataset":{"type":"string","enum":["quiz_questions"]},"id":{"type":"string"},"version":{"type":"string"}},"required":["dataset","id","version"],"additionalProperties":false}"""),
     ];
 
@@ -85,8 +85,8 @@ public sealed class StorageTools(IQuizStorage repository)
                         correctOptionId = "zero-based index",
                         explanation = "0-200 characters"
                     },
-                    predicates = "Cosmos SQL WHERE expression only. Fields: c.question, c.type, c.explanation, c.correctOptionId, c.posted. Operators: = != < <= > >= AND OR NOT. Functions: CONTAINS, STARTSWITH, ENDSWITH, LOWER, UPPER, IS_DEFINED, IS_NULL. Example: CONTAINS(LOWER(c.question), 'linux'). Empty predicate lists up to limit records.",
-                    permissions = "Only current chat, administrator only. Cannot edit/delete already posted quizzes or internal state. Use versions for update/delete.",
+                    predicates = "Cosmos SQL WHERE expression only, without backslash escapes. Fields: c.question, c.type, c.explanation, c.correctOptionId, c.posted. Operators: = != < <= > >= AND OR NOT. Functions: CONTAINS, STARTSWITH, ENDSWITH, LOWER, UPPER, IS_DEFINED, IS_NULL. Example: CONTAINS(LOWER(c.question), 'linux'). Empty predicate lists up to limit records.",
+                    permissions = "Only current chat, administrator only. Cannot edit/delete posted quizzes, quizzes pending delivery, or internal state. Use versions for update/delete.",
                 });
             return await repository.ExecuteAsync(name, arguments, context, mutationIndex, cancellation);
         }

@@ -20,6 +20,7 @@ public class StorageToolsTests
     [InlineData("c._etag = 'secret'")]
     [InlineData("true) OR true --")]
     [InlineData("EXISTS(SELECT VALUE x FROM x IN c.options)")]
+    [InlineData(@"c.question = 'x\' OR c.posted = false OR c.question = '")]
     public void PredicateRejectsScopeEscapeAndUnsupportedQueries(string predicate) =>
         Assert.Throws<ArgumentException>(() => QuizStorageRepository.ValidatePredicate(predicate));
 
@@ -36,6 +37,16 @@ public class StorageToolsTests
         Assert.Equal("forbidden", unauthorized.Code);
         Assert.Equal("validation_error", extra.Code);
         await repository.DidNotReceiveWithAnyArgs().ExecuteAsync(default!, default, default!, default, default);
+    }
+
+    [Fact]
+    public async Task DalReturnsValidationErrorForWrongArgumentTypes()
+    {
+        var repo = new QuizStorageRepository(null!, null!, Microsoft.Extensions.Logging.Abstractions.NullLogger<QuizStorageRepository>.Instance);
+        var result = await repo.ExecuteAsync("storage_list",
+            JsonSerializer.Deserialize<JsonElement>("""{"predicate":42,"limit":1}"""),
+            new(-1, StorageTools.AdministratorUserId, 1, "list"), 0, default);
+        Assert.Equal("invalid_query", result.Code);
     }
 
     [Fact]
@@ -84,6 +95,26 @@ public class StorageToolsTests
         { StorageContext = new(-1, 123, 1, "Hello") });
         using var request = JsonDocument.Parse(handler.Requests.Single());
         Assert.False(request.RootElement.TryGetProperty("tools", out _));
+    }
+
+    [Fact]
+    public async Task IntermediateToolResultsCountAgainstInputBudget()
+    {
+        var repository = Substitute.For<IQuizStorage>();
+        repository.ExecuteAsync(Arg.Any<string>(), Arg.Any<JsonElement>(), Arg.Any<StorageContext>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new StorageResult("ok", Data: new { text = string.Concat(Enumerable.Repeat("abcdefghij ", 2000)) }));
+        using var handler = new SequenceHandler(
+            ToolResponse("one", "storage_list", """{"dataset":"quiz_questions","predicate":"","limit":1}"""),
+            TextResponse("Should not be reached"));
+        using var http = new HttpClient(handler);
+        var settings = TestAzureSettings.Create();
+        var client = settings.CreateChatCompletionClient(settings.ChatDeployment, http, new StorageTools(repository));
+        var result = await client.CompleteAsync(settings.Chat.CreateRequest([ChatMessage.FromUser("list")], settings.ChatDeployment)
+            with { StorageContext = new(-1, StorageTools.AdministratorUserId, 1, "list"), InputTokenLimit = 2000 });
+        Assert.Equal("tool_budget_exceeded", result.ErrorType);
+        Assert.Single(handler.Requests);
+        await repository.Received(1).ExecuteAsync("storage_list", Arg.Any<JsonElement>(), Arg.Any<StorageContext>(), 0,
+            Arg.Any<CancellationToken>());
     }
 
     [Fact]

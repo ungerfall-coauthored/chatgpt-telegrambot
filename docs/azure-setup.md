@@ -68,8 +68,17 @@ observing more than 50 RU. RU is measured after a page returns: this is not a
 hard Azure spending cap. There is no unrestricted pagination.
 `storage_get`, `storage_create`, `storage_update`, and `storage_delete`
 operate through the same DAL. Creates validate 1-5 questions per call;
-updates/deletes require the current version and reject posted quizzes.
+updates/deletes require the current version and reject posted quizzes or
+quizzes reserved for scheduled delivery.
 Mutations and durable retry receipts commit atomically in the same partition.
+The scheduler takes a per-chat, per-quiz-type delivery lock and reserves a quiz
+using its Cosmos ETag before sending its poll. Completion atomically marks it
+posted and removes the lock. An interrupted or uncertain delivery leaves the
+lock in place and requires manual reconciliation rather than an automatic
+resend. Check Telegram delivery before clearing `deliveryPending` or marking the
+quiz posted and deleting its `quiz-delivery-lock:<quiz-type>` record.
+Predicates containing backslash escapes are rejected to prevent SQL scope
+escapes.
 
 The SDK loop preserves assistant tool calls and their matching tool results.
 It is limited to 8 rounds, 12 calls, two error-correction retries, a

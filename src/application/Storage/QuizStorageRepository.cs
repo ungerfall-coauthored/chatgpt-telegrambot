@@ -28,6 +28,7 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
         if (!StorageTools.IsAuthorized(context)) return new("error", "forbidden", "Storage access denied.");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        var writeStarted = false;
         try
         {
             if (operation == "storage_list") return await List(arguments, context.ChatId, timeout.Token);
@@ -35,11 +36,11 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
             {
                 var response = await Read(arguments.GetProperty("id").GetString()!, context.ChatId, timeout.Token);
                 var view = View(response.Resource, response.ETag);
-                return Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(view, StorageResult.JsonOptions)) > 12000
+                return Encoding.UTF8.GetByteCount(new StorageResult("ok", Data: view).ToJson()) > 12000
                     ? new("error", "budget_exceeded", "Quiz exceeds the 12000-byte tool result limit.")
                     : new("ok", Data: view);
             }
-            return await Mutate(operation, arguments, context, mutationIndex, timeout.Token);
+            return await Mutate(operation, arguments, context, mutationIndex, () => writeStarted = true, timeout.Token);
         }
         catch (CosmosException ex)
         {
@@ -57,9 +58,11 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
                 ? "Invalid Cosmos SQL predicate. Check field names, operators, quoting and parentheses using storage_schema."
                 : "Storage operation did not complete successfully. For a conflict, read the current record before retrying.");
         }
-        catch (ArgumentException ex)
+        catch (Exception ex) when (!writeStarted && ex is (ArgumentException or JsonException or InvalidOperationException
+            or KeyNotFoundException or FormatException or OverflowException))
         {
-            return new("error", operation == "storage_list" ? "invalid_query" : "validation_error", ex.Message);
+            return new("error", operation == "storage_list" ? "invalid_query" : "validation_error",
+                ex is ArgumentException ? ex.Message : "Invalid tool arguments. Follow storage_schema.");
         }
         catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
         {
@@ -95,7 +98,6 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
         var records = new List<object>();
         double charge = 0;
         var truncated = false;
-        var bytes = 0;
         // At most two pages, including empty pages. Never drain an unbounded iterator.
         for (var page = 0; page < 2 && iterator.HasMoreResults; page++)
         {
@@ -106,20 +108,34 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
             {
                 if (records.Count == limit) { truncated = true; break; }
                 var view = View(record.Deserialize<TimedTaskQuiz>()!, record.GetProperty("_etag").GetString()!);
-                var size = Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(view, StorageResult.JsonOptions));
-                if (bytes + size > 12000) { truncated = true; break; }
                 records.Add(view);
-                bytes += size;
+                var candidate = new StorageResult("ok", Data: new { records, truncated = true, requestCharge = charge });
+                if (Encoding.UTF8.GetByteCount(candidate.ToJson()) > 12000)
+                {
+                    records.RemoveAt(records.Count - 1);
+                    truncated = true;
+                    break;
+                }
             }
             if (truncated || records.Count == limit) break;
         }
-        return new("ok", Data: new { records, truncated = truncated || iterator.HasMoreResults, requestCharge = charge });
+        truncated |= iterator.HasMoreResults;
+        var result = new StorageResult("ok", Data: new { records, truncated, requestCharge = charge });
+        while (records.Count > 0 && Encoding.UTF8.GetByteCount(result.ToJson()) > 12000)
+        {
+            records.RemoveAt(records.Count - 1);
+            truncated = true;
+            result = new("ok", Data: new { records, truncated, requestCharge = charge });
+        }
+        return result;
     }
 
     public static void ValidatePredicate(string predicate)
     {
         if (predicate == null || predicate.Length > 512)
             throw new ArgumentException("Predicate must be at most 512 characters.");
+        if (predicate.Contains('\\'))
+            throw new ArgumentException("Backslash escapes are not supported in predicates.");
         var stripped = Regex.Replace(predicate, @"'([^']|'')*'", "''");
         var tokens = Regex.Matches(stripped,
             @"c\.[A-Za-z]+|[A-Za-z_]+|\d+(?:\.\d+)?|!=|<=|>=|[=<>(),']|\s+", RegexOptions.CultureInvariant);
@@ -153,7 +169,7 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
     }
 
     private async Task<StorageResult> Mutate(string operation, JsonElement arguments, StorageContext context,
-        int mutationIndex, CancellationToken cancellation)
+        int mutationIndex, Action markWriteStarted, CancellationToken cancellation)
     {
         if (mutationIndex is < 1 or > 12) throw new ArgumentException("Invalid mutation operation index.");
         var receiptId = $"storage-operation:{context.UserId}:{context.MessageId}:{mutationIndex}";
@@ -191,10 +207,22 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
             var version = arguments.GetProperty("version").GetString();
             if (string.IsNullOrWhiteSpace(version) || current.ETag.Trim('"') != version.Trim('"'))
                 return new("error", "conflict", "Version changed. Read the current record.");
-            if (current.Resource.Posted) return new("error", "forbidden", "Already posted quizzes cannot be changed.");
+            if (current.Resource.Posted || current.Resource.DeliveryPending)
+                return new("error", "forbidden", "Posted quizzes and quizzes with pending delivery cannot be changed.");
             var requestOptions = new TransactionalBatchItemRequestOptions { IfMatchEtag = current.ETag };
             if (operation == "storage_delete") batch.DeleteItem(id, requestOptions);
-            else batch.ReplaceItem(id, ParseRecord(arguments.GetProperty("record"), id, context.ChatId), requestOptions);
+            else
+            {
+                var replacement = ParseRecord(arguments.GetProperty("record"), id, context.ChatId);
+                batch.PatchItem(id, new[]
+                {
+                    PatchOperation.Set("/type", replacement.Type),
+                    PatchOperation.Set("/question", replacement.Question),
+                    PatchOperation.Set("/options", replacement.Options),
+                    PatchOperation.Set("/correctOptionId", replacement.CorrectOptionId),
+                    PatchOperation.Set("/explanation", replacement.Explanation)
+                }, new TransactionalBatchPatchItemRequestOptions { IfMatchEtag = current.ETag });
+            }
             ids.Add(id);
         }
         else throw new ArgumentException("Unknown storage operation.");
@@ -208,10 +236,11 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
             Hash = hash,
             Result = JsonSerializer.SerializeToElement(result, StorageResult.JsonOptions)
         });
+        markWriteStarted();
         using var response = await batch.ExecuteAsync(cancellation);
         if (!response.IsSuccessStatusCode)
             return new("error", response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed
-                ? "conflict" : "storage_error", "Atomic write failed; no records were changed. Retry the same operation or read the latest version.");
+                ? "conflict" : "storage_error", "Atomic write did not return success. Its outcome may be uncertain; do not retry automatically.");
         return result;
     }
 
@@ -248,6 +277,7 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
         correctOptionId = quiz.CorrectOptionId,
         explanation = quiz.Explanation,
         posted = quiz.Posted,
+        deliveryPending = quiz.DeliveryPending,
         version = version.Trim('"'),
     };
 
