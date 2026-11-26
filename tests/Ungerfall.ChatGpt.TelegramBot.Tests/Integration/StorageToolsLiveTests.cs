@@ -360,14 +360,17 @@ public class StorageToolsLiveTests(Xunit.Abstractions.ITestOutputHelper output)
             cancellationToken: fixture.Token)).Resource.Options);
     }
 
-    [SkippableFact]
-    public async Task ExactRussianLinuxQuizRequestCountsDeliveredAnswersAndReshufflesWithoutContextOverflow()
+    [SkippableTheory]
+    [InlineData(10, 8)]
+    [InlineData(4, 128)]
+    public async Task ExactRussianLinuxQuizRequestCountsDeliveredAnswersAndReshufflesWithoutContextOverflow(int delivered, int upcoming)
     {
         Skip.IfNot(Environment.GetEnvironmentVariable("STORAGE_TOOLS_LIVE_TEST") == "1", "Storage live tests are not enabled.");
         await using var fixture = new Fixture();
-        await fixture.SeedBooks(18);
+        var total = delivered + upcoming;
+        await fixture.SeedBooks(total, delivered + 1, delivered == 4);
         var before = new Dictionary<int, BookQuiz>();
-        for (var sequence = 1; sequence <= 18; sequence++)
+        for (var sequence = 1; sequence <= total; sequence++)
             before.Add(sequence, (await fixture.Container.ReadItemAsync<BookQuiz>(BookQuiz.QuizId(sequence),
                 new PartitionKey(fixture.ChatId), cancellationToken: fixture.Token)).Resource);
         var recording = new RecordingStorage(fixture.Repository);
@@ -375,7 +378,7 @@ public class StorageToolsLiveTests(Xunit.Abstractions.ITestOutputHelper output)
         using var http = new HttpClient(transport);
         var azure = AzureOpenAiSettings.FromEnvironment();
         var client = azure.CreateChatCompletionClient(azure.ChatDeployment, http, new StorageTools(recording));
-        const string request = "Что-то послдение 5 квизов с правильным ответом под номером 1. Совпадение? Проверь и перетасуй квиз про линукс";
+        const string request = "Что-то последние 5 квизов с правильным ответом под номером 1. Совпадение? Проверь и перетасуй варианты ответов квиза про линукс";
         var completionRequest = azure.Chat.CreateRequest(
             [ChatMessage.FromSystem("You are a helpful Telegram assistant. Follow the current user's request."), ChatMessage.FromUser(request)],
             azure.ChatDeployment) with
@@ -389,8 +392,8 @@ public class StorageToolsLiveTests(Xunit.Abstractions.ITestOutputHelper output)
             && select.GetString()?.Contains("COUNT", StringComparison.OrdinalIgnoreCase) == true),
             $"No scalar count: {completion.Content}; {diagnostics}; results: {results}");
         Assert.True(recording.Results.Any(result => result.Status == "ok" && Data(result).TryGetProperty("value", out var value)
-            && value.ValueKind == JsonValueKind.Number && value.GetInt32() == 5),
-            $"No count of 5: {completion.Content}; {diagnostics}; results: {results}");
+            && value.ValueKind == JsonValueKind.Number && value.GetInt32() == Math.Min(5, delivered)),
+            $"No delivered count: {completion.Content}; {diagnostics}; results: {results}");
         Assert.True(recording.Operations.Contains("storage_shuffle_options"), $"No options shuffle: {completion.Content}; {diagnostics}");
         Assert.DoesNotContain("storage_update", recording.Operations);
         Assert.DoesNotContain("storage_create", recording.Operations);
@@ -399,14 +402,14 @@ public class StorageToolsLiveTests(Xunit.Abstractions.ITestOutputHelper output)
         var counter = new TokenCounter();
         Assert.All(transport.Requests, body => Assert.True(counter.Count(body) <= completionRequest.InputTokenLimit,
             "A model request exceeded the input budget."));
-        Assert.True(recording.Results.Sum(result => Encoding.UTF8.GetByteCount(result.ToJson())) < 8000,
+        Assert.True(recording.Results.Sum(result => Encoding.UTF8.GetByteCount(result.ToJson())) < 12000,
             "The exact request accumulated excessive storage output.");
         output.WriteLine($"AI requests: {transport.Requests.Count}; total tokens: {completion.TotalTokens}; "
             + $"max serialized input tokens: {transport.Requests.Max(counter.Count)}; "
             + $"storage output bytes: {recording.Results.Sum(result => Encoding.UTF8.GetByteCount(result.ToJson()))}");
 
         var shuffled = 0;
-        for (var sequence = 1; sequence <= 18; sequence++)
+        for (var sequence = 1; sequence <= total; sequence++)
         {
             var after = (await fixture.Container.ReadItemAsync<BookQuiz>(BookQuiz.QuizId(sequence),
                 new PartitionKey(fixture.ChatId), cancellationToken: fixture.Token)).Resource;
@@ -423,7 +426,7 @@ public class StorageToolsLiveTests(Xunit.Abstractions.ITestOutputHelper output)
             Assert.Equal(before[sequence].PdfPage, after.PdfPage);
             Assert.Equal(before[sequence].Options.Order(), after.Options.Order());
             Assert.Equal(before[sequence].Options[before[sequence].CorrectOptionId], after.Options[after.CorrectOptionId]);
-            if (sequence < 11)
+            if (sequence <= delivered)
             {
                 Assert.Equal(before[sequence].Options, after.Options);
                 Assert.Equal(before[sequence].CorrectOptionId, after.CorrectOptionId);
@@ -431,13 +434,13 @@ public class StorageToolsLiveTests(Xunit.Abstractions.ITestOutputHelper output)
             else if (!before[sequence].Options.SequenceEqual(after.Options))
             {
                 shuffled++;
-                Assert.NotEqual(0, after.CorrectOptionId);
+                Assert.NotEqual(before[sequence].CorrectOptionId, after.CorrectOptionId);
             }
         }
-        Assert.Equal(8, shuffled);
+        Assert.Equal(upcoming, shuffled);
         var progress = await fixture.Container.ReadItemAsync<BookQuizProgress>("book-quiz-progress:" + BookQuiz.Series,
             new PartitionKey(fixture.ChatId), cancellationToken: fixture.Token);
-        Assert.Equal(11, progress.Resource.NextSequence);
+        Assert.Equal(delivered + 1, progress.Resource.NextSequence);
         Assert.False(progress.Resource.Sending);
     }
 
@@ -480,13 +483,13 @@ public class StorageToolsLiveTests(Xunit.Abstractions.ITestOutputHelper output)
         public CancellationToken Token => timeout.Token;
         public Container Container => Cosmos.GetContainer(Options.Value.DatabaseId, Options.Value.TimedTasksContainerId);
 
-        public async Task SeedBooks(int count = 12)
+        public async Task SeedBooks(int count = 12, int nextSequence = 11, bool firstPositionOnly = false)
         {
             string[] options = ["read() - чтение байтов из файлового дескриптора", "write() - запись байтов в файловый дескриптор",
                 "fork() - создание дочернего процесса", "execve() - запуск новой программы"];
             for (var sequence = 1; sequence <= count; sequence++)
             {
-                var correct = sequence < 6 ? sequence % 4 : 0;
+                var correct = firstPositionOnly || sequence >= 6 ? 0 : sequence % 4;
                 var quiz = new BookQuiz
                 {
                     Id = BookQuiz.QuizId(sequence),
@@ -505,7 +508,7 @@ public class StorageToolsLiveTests(Xunit.Abstractions.ITestOutputHelper output)
                 await Container.CreateItemAsync(quiz, new PartitionKey(ChatId), cancellationToken: Token);
             }
             await Container.CreateItemAsync(new BookQuizProgress
-            { ChatId = ChatId, NextSequence = 11, LastSentUtc = DateTime.UtcNow.AddDays(-1) }, new PartitionKey(ChatId), cancellationToken: Token);
+            { ChatId = ChatId, NextSequence = nextSequence, LastSentUtc = DateTime.UtcNow.AddDays(-1) }, new PartitionKey(ChatId), cancellationToken: Token);
             await Container.PatchItemAsync<BookQuiz>(BookQuiz.QuizId(11), new PartitionKey(ChatId),
                 new[] { PatchOperation.Set("/customMetadata", "preserve") }, cancellationToken: Token);
         }
@@ -539,7 +542,7 @@ public class StorageToolsLiveTests(Xunit.Abstractions.ITestOutputHelper output)
             try
             {
                 var allowedIds = new HashSet<string>();
-                allowedIds.UnionWith(Enumerable.Range(1, 18).Select(BookQuiz.QuizId));
+                allowedIds.UnionWith(Enumerable.Range(1, 132).Select(BookQuiz.QuizId));
                 allowedIds.Add("book-quiz-progress:" + BookQuiz.Series);
                 allowedIds.UnionWith(new[] { $"quiz-delivery-lock:{TimedTaskQuiz.Type_ComputerScience}",
                     $"quiz-delivery-lock:{TimedTaskQuiz.Type_Films}", $"quiz-delivery-lock:{TimedTaskQuiz.Type_VideoGames}" });

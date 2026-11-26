@@ -86,7 +86,7 @@ public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? 
             + "do not inspect quiz_questions for it. To check them, read book_quiz_progress.nextSequence "
             + "and count the sequence range max(1,nextSequence-N) through nextSequence-1 with one VALUE COUNT(1) query; do not list those rows or count all-time or upcoming quizzes. "
             + "An explicit request to reshuffle the Linux quiz means shuffle answer options of upcoming book questions, "
-            + "not question text or question order. Use storage_shuffle_options in batches until hasMore is false; "
+            + "not question text or question order. Use storage_shuffle_options with limit 64 in batches until hasMore is false; "
             + "do not read/rewrite every question. Never guess record IDs: use the exact ID returned by storage. "
             + "Correct invalid queries at most twice. Be decisive and use the fewest tool calls; "
             + "for read-only questions, answer as soon as one query result suffices. "
@@ -103,6 +103,8 @@ public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? 
         var inputTokens = 0;
         var outputTokens = 0;
         var outputBudget = (int)Math.Min(8192L, (long)request.MaxCompletionTokens * 4);
+        string? lastInvalidTool = null;
+        string? lastInvalidCode = null;
         for (var round = 0; round < 8; round++)
         {
             // Include tool schemas and intermediate results, not just the original prompt.
@@ -136,9 +138,12 @@ public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? 
             messages.Add(new AssistantChatMessage(completion));
             foreach (var call in completion.ToolCalls)
             {
-                if (++calls > 12 || corrections > 2)
+                if (++calls > 12)
                     return new(false, null, null, outputTokens, inputTokens, inputTokens + outputTokens,
-                        "tool_budget_exceeded", "Storage tool-call or correction limit reached.");
+                        "tool_call_limit", $"Storage tool-call limit reached: calls={calls}, limit=12, successfulMutations={mutations}.");
+                if (corrections > 2)
+                    return new(false, null, null, outputTokens, inputTokens, inputTokens + outputTokens,
+                        "tool_query_recovery_exhausted", $"Storage query recovery exhausted: invalidCalls={corrections}, limit=2, lastTool={lastInvalidTool}, lastCode={lastInvalidCode}, successfulMutations={mutations}.");
                 var mutation = call.FunctionName is "storage_create" or "storage_update" or "storage_delete" or "storage_shuffle_options";
                 var result = mutation && writesBlocked
                     ? new StorageResult("error", "forbidden", "Further writes are blocked after a conflict or uncertain outcome. Report the failure.")
@@ -146,7 +151,13 @@ public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? 
                         context, mutation ? mutations + 1 : 0, timeout.Token);
                 if (mutation && result.Status == "ok") mutations++;
                 if (mutation && result.Status != "ok" && result.Code != "validation_error") writesBlocked = true;
-                if (result.Code is "invalid_query" or "validation_error") corrections++;
+                if (result.Code is "invalid_query" or "validation_error")
+                {
+                    corrections++;
+                    lastInvalidTool = StorageTools.Definitions.Any(tool => tool.FunctionName == call.FunctionName)
+                        ? call.FunctionName : "unknown";
+                    lastInvalidCode = result.Code;
+                }
                 messages.Add(new ToolChatMessage(call.Id, result.ToJson()));
                 if (writesBlocked)
                 {
@@ -157,7 +168,7 @@ public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? 
             }
         }
         return new(false, null, null, outputTokens, inputTokens, inputTokens + outputTokens,
-            "tool_budget_exceeded", "Storage conversation exceeded its round limit.");
+            "tool_round_limit", $"Storage conversation exceeded its round limit: rounds=8, calls={calls}, invalidCalls={corrections}, successfulMutations={mutations}.");
     }
 
     private static ChatCompletionResult Result(ChatCompletion completion) => new(

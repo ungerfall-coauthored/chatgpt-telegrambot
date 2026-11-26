@@ -8,6 +8,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Ungerfall.ChatGpt.TelegramBot.Database;
@@ -57,16 +58,18 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
                 HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable or HttpStatusCode.RequestTimeout => "temporarily_unavailable",
                 _ => "storage_error",
             };
-            logger.LogWarning("Storage operation {Operation} failed: HTTP {Status}, activity {ActivityId}",
-                operation, (int)ex.StatusCode, ex.ActivityId);
-            return new("error", code, code == "invalid_query"
-                ? "Invalid Cosmos SQL query. Check SELECT, WHERE and ORDER BY using storage_schema."
-                : "Storage operation did not complete successfully. For a conflict, read the current record before retrying.");
+            var reason = code == "invalid_query" ? QueryError(ex.Message)
+                : "Storage operation did not complete successfully. For a conflict, read the current record before retrying.";
+            logger.LogWarning("Storage operation {Operation} failed: HTTP {Status}, activity {ActivityId}; {Reason}",
+                operation, (int)ex.StatusCode, ex.ActivityId, reason);
+            return new("error", code, reason);
         }
         catch (Exception ex) when (!writeStarted && ex is (ArgumentException or JsonException or InvalidOperationException
             or KeyNotFoundException or FormatException or OverflowException))
         {
-            return new("error", operation == "storage_list" ? "invalid_query" : "validation_error",
+            var code = operation == "storage_list" ? "invalid_query" : "validation_error";
+            logger.LogWarning("Storage operation {Operation} rejected locally: {Code}", operation, code);
+            return new("error", code,
                 ex is ArgumentException ? ex.Message : "Invalid tool arguments. Follow storage_schema.");
         }
         catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
@@ -276,7 +279,7 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
         TransactionalBatch batch, JsonElement arguments, StorageContext context, CancellationToken cancellation)
     {
         var limit = arguments.GetProperty("limit").GetInt32();
-        if (limit is < 1 or > 5) throw new ArgumentException("Shuffle batch limit must be between 1 and 5.");
+        if (limit is < 1 or > 64) throw new ArgumentException("Shuffle batch limit must be between 1 and 64.");
         var progress = await ReadProgress(context.ChatId, cancellation);
         if (progress.Sending) return ([], false, new("error", "forbidden", "Book delivery is in flight; do not reshuffle now."));
         var requestId = $"{context.UserId}:{context.MessageId}";
@@ -327,6 +330,17 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
                 new TransactionalBatchPatchItemRequestOptions { IfMatchEtag = progress.ETag });
         }
         return (ids, records.Count > limit || iterator.HasMoreResults, null);
+    }
+
+    private static string QueryError(string details)
+    {
+        if (details.Contains("composite index", StringComparison.OrdinalIgnoreCase))
+            return "ORDER BY needs an unavailable composite index. Use one sort field: c.sequence DESC for book quizzes or c._ts DESC for ordinary quizzes.";
+        var code = Regex.Match(details, @"\bSC[0-9]{4}\b").Value;
+        return "Invalid Cosmos SQL" + (code.Length == 0 ? "" : $" ({code})")
+            + ". Supply SELECT and WHERE clauses separately, without SELECT/FROM/WHERE keywords. "
+            + "Every comparison needs a value, e.g. c.sequence >= 1 AND c.sequence < 5 AND c.correctOptionId = 0. "
+            + "Use select VALUE COUNT(1) with orderBy null for counts; ORDER BY accepts one field only.";
     }
 
     private static TimedTaskQuiz ParseRecord(JsonElement record, string id, long chatId)

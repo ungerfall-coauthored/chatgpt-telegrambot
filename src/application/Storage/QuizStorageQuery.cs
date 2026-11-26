@@ -68,6 +68,8 @@ public sealed record QuizStorageQuery(QueryDefinition Definition, string Dataset
         if (aggregate && order.Length != 0) throw new ArgumentException("COUNT does not support ORDER BY; restrict the subset with WHERE.");
         if (order.Length != 0)
         {
+            if (order.Contains(','))
+                throw new ArgumentException("ORDER BY supports one field only; this container has no composite indexes. Use c.sequence DESC for book quizzes or c._ts DESC for ordinary quizzes.");
             foreach (var part in order.Split(','))
             {
                 var match = Regex.Match(part.Trim(), @"^c\.([A-Za-z_][A-Za-z0-9_]*)(?:\s+(?:ASC|DESC))?$", RegexOptions.IgnoreCase);

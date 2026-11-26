@@ -102,8 +102,8 @@ field aliases and a SELECT-only `c.version` token are supported.
 Scalar counts/exists use `data.value`; regular projections use `data.records`.
 Other `VALUE` projections use an array in `data.value`.
 
-Ordering accepts documented fields with ASC/DESC; multi-field ordering may
-require a Cosmos composite index. Book delivery order is `c.sequence`;
+Ordering accepts one documented field with ASC/DESC. Multi-field ordering is
+rejected before querying because composite indexes are not configured. Book delivery order is `c.sequence`;
 ordinary `c._ts` is last modification time, not a separate delivery timestamp.
 The server permits documented fields/operators only, reads at
 most two pages and 10 records, limits result data to 12 KB, and stops after
@@ -125,7 +125,10 @@ rather than tools that could create gaps in the series.
 To check the last N delivered book questions, read progress and count sequences
 `max(1,nextSequence-N)` through `nextSequence-1`. Answer position 1 is the
 zero-based `correctOptionId = 0`. `storage_shuffle_options` then reshuffles only
-upcoming questions' answer options in batches of up to five. It preserves the
+upcoming questions' answer options in batches of up to 64. Use `limit: 64` to
+avoid spending model rounds on small batches. A batch uses at most 66 Cosmos
+transaction operations (64 quiz patches, a progress guard and a receipt),
+below Cosmos's 100-operation limit. It preserves the
 correct answer text, changes its position, and leaves question text/order and
 citations unchanged. Responses contain only counts, IDs and `hasMore`; repeat
 while `hasMore=true`. Per-request markers prevent processing the same question
@@ -148,7 +151,11 @@ three-minute overall timeout and 15 seconds per DAL call. Each model response
 retains the configured output ceiling; the whole tool turn is capped at four
 times that ceiling, up to 8192 output tokens. Input includes tool schemas and
 intermediate results. Query errors are returned as sanitized tool results,
-never raw Cosmos exceptions, keys, or stack traces. Further writes are blocked
+including compiler codes and actionable supported-query guidance, never raw
+Cosmos exceptions, keys, or stack traces. Provider rejections and local DAL
+validation failures are logged without query arguments. Recovery, call and
+round exhaustion have distinct error types and counters; only token-budget
+errors use the context-overflow reply. Further writes are blocked
 after conflicts or uncertain failures. A failed final response does not imply
 that earlier writes were rolled back.
 
@@ -179,6 +186,9 @@ update through the real Azure chat client. Telegram transport is mocked:
 no messages, button presses, or Telegram credentials are required. Fixture
 records and receipts are deleted afterwards. The tools' intermediate arguments
 and results never enter ordinary chat history; the final bot reply does.
+The exact Russian Linux-quiz regression covers both ten delivered/eight
+upcoming questions and the production-shaped four delivered/128 upcoming
+questions, checking every answer and citation after the shuffle.
 
 ### Optional reply decisions: Microsoft-Decision-1.1
 
