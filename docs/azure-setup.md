@@ -149,7 +149,8 @@ The SDK loop preserves assistant tool calls and their matching tool results.
 It is limited to 8 rounds, 12 calls, two error-correction retries, a
 three-minute overall timeout and 15 seconds per DAL call. Each model response
 retains the configured output ceiling; the whole tool turn is capped at four
-times that ceiling, up to 8192 output tokens. Input includes tool schemas and
+times that ceiling, also bounded by `AZURE_OPENAI_CHAT_TOOL_OUTPUT_TOKENS`
+(8192 by default). Input includes tool schemas and
 intermediate results. Query errors are returned as sanitized tool results,
 including compiler codes and actionable supported-query guidance, never raw
 Cosmos exceptions, keys, or stack traces. Provider rejections and local DAL
@@ -161,10 +162,26 @@ that earlier writes were rolled back.
 
 The fork deployment applies `config/chat-input-budget.json`: **131072 chat
 input tokens** and a **400000-token model context capacity**. Only these two
-non-secret settings are managed; chat/summary/autonomous output settings and
-the 8192-token tool-turn output cap are unchanged. The deployment verifies the
+non-secret settings are managed by the input profile. The deployment verifies the
 existing output/safety budgets fit and that other AI settings remain untouched.
 These deployment overrides do not change the generic library defaults.
+
+The separately approved `config/chat-output-budget.json` sets **32768 tokens
+per chat response** and **65536 output tokens per tool turn**. Output includes
+hidden reasoning, not just the final reply. Summary/autonomous settings,
+input/context settings and timeouts are unchanged. Replies remain concise.
+The output deployment step writes only these two chat output keys and verifies
+all other AI settings are unchanged.
+
+Storage turns emit `AI storage start/request/response/tool/complete/abort` logs
+with a generated turn ID, round/call counters, input estimates, actual output
+and reasoning usage, finish reasons, elapsed time and precise abort reasons.
+Tool logs include dataset, limit, masked SELECT/WHERE/ORDER BY shapes, scalar
+counts, status/code and result size. String literals, numbers and unknown
+identifiers are redacted; prompts, replies, records, IDs, credentials, URLs
+and raw provider exceptions are not logged by these diagnostics. A successful
+turn does not emit an abort. Filter Application Insights traces by
+`message startswith "AI storage "` and the turn ID to reconstruct a failure.
 
 An automated live regression sends more than the old 16384-token input budget
 through the actual configured chat client, with the same output ceiling:
@@ -189,6 +206,8 @@ and results never enter ordinary chat history; the final bot reply does.
 The exact Russian Linux-quiz regression covers both ten delivered/eight
 upcoming questions and the production-shaped four delivered/128 upcoming
 questions, checking every answer and citation after the shuffle.
+The separate exact read-only request checks the whole series, including
+upcoming questions, rather than substituting the latest delivered sample.
 
 ### Optional reply decisions: Microsoft-Decision-1.1
 

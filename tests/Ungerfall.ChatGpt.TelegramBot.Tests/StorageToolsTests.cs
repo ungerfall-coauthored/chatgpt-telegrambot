@@ -4,6 +4,8 @@ using System.Text.Json;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
+using System.Text.Json.Nodes;
 using Ungerfall.ChatGpt.TelegramBot.Database;
 using Ungerfall.ChatGpt.TelegramBot.Storage;
 
@@ -11,6 +13,98 @@ namespace Ungerfall.ChatGpt.TelegramBot.Tests;
 
 public class StorageToolsTests
 {
+    [Theory]
+    [InlineData("'secret-value'")]
+    [InlineData("'secret-value")]
+    [InlineData("\"secret-value\\\"still-secret\"")]
+    [InlineData("secret_value")]
+    public async Task DiagnosticsRecordToolShapeWithoutUserData(string value)
+    {
+        using var logs = new HttpLogCapture();
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        var repository = Substitute.For<IQuizStorage>();
+        repository.ExecuteAsync(Arg.Any<string>(), Arg.Any<JsonElement>(), Arg.Any<StorageContext>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new StorageResult("ok", Data: new { records = new[] { new { question = "secret-record" } } }));
+        var arguments = JsonSerializer.Serialize(new
+        { dataset = "quiz_questions", select = "c.id", predicate = $"c.question = {value} AND c.correctOptionId = 1234567", orderBy = (string?)null, limit = 1 });
+        using var handler = new SequenceHandler(ToolResponse("one", "storage_list", arguments), TextResponse("secret-reply"));
+        using var http = new HttpClient(handler);
+        var settings = TestAzureSettings.Create();
+        var client = settings.CreateChatCompletionClient(settings.ChatDeployment, http, new StorageTools(repository),
+            factory.CreateLogger<OpenAiChatCompletionClient>());
+
+        var result = await client.CompleteAsync(settings.Chat.CreateRequest([ChatMessage.FromUser("secret-user-message")], settings.ChatDeployment)
+            with
+        { StorageContext = new(-1, StorageTools.AdministratorUserId, 1, "secret-user-message") });
+
+        Assert.True(result.Successful);
+        Assert.True(logs.Contains("AI storage response"));
+        Assert.True(logs.Contains("AI storage tool"));
+        Assert.False(logs.Contains("AI storage abort"));
+        Assert.True(logs.Contains("c.question ="));
+        Assert.False(logs.Contains("secret-value"));
+        Assert.False(logs.Contains("still-secret"));
+        Assert.False(logs.Contains("secret_value"));
+        Assert.False(logs.Contains("secret-record"));
+        Assert.False(logs.Contains("secret-reply"));
+        Assert.False(logs.Contains("secret-user-message"));
+        Assert.False(logs.Contains("1234567"));
+        Assert.False(logs.Contains("test-key"));
+    }
+
+    [Fact]
+    public async Task DiagnosticsIdentifyReasoningAndPerResponseOutputExhaustion()
+    {
+        using var logs = new HttpLogCapture();
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        var response = JsonNode.Parse(TextResponse("secret-partial-reply"))!;
+        response["choices"]![0]!["finish_reason"] = "length";
+        response["usage"]!["completion_tokens"] = 8192;
+        response["usage"]!["completion_tokens_details"] = new JsonObject { ["reasoning_tokens"] = 8192 };
+        using var handler = new SequenceHandler(response.ToJsonString());
+        using var http = new HttpClient(handler);
+        var settings = TestAzureSettings.Create(new CompletionSettings(maxCompletionTokens: 8192));
+        var client = settings.CreateChatCompletionClient(settings.ChatDeployment, http,
+            new StorageTools(Substitute.For<IQuizStorage>()), factory.CreateLogger<OpenAiChatCompletionClient>());
+
+        var result = await client.CompleteAsync(settings.Chat.CreateRequest([ChatMessage.FromUser("check")], settings.ChatDeployment)
+            with
+        { StorageContext = new(-1, StorageTools.AdministratorUserId, 1, "check") });
+
+        Assert.Equal("tool_budget_exceeded", result.ErrorType);
+        Assert.True(logs.Contains("response_output_limit"));
+        Assert.True(logs.Contains("ReasoningTokens=8192"));
+        Assert.False(logs.Contains("secret-partial-reply"));
+    }
+
+    [Fact]
+    public async Task ReviewedToolTurnAllowsTwo32KResponsesThenStopsAt64K()
+    {
+        using var logs = new HttpLogCapture();
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        var responses = Enumerable.Range(1, 2).Select(index =>
+        {
+            var response = JsonNode.Parse(ToolResponse(index.ToString(), "storage_catalog", "{}"))!;
+            response["usage"]!["completion_tokens"] = 32768;
+            return response.ToJsonString();
+        }).ToArray();
+        using var handler = new SequenceHandler(responses);
+        using var http = new HttpClient(handler);
+        var settings = TestAzureSettings.Create(new CompletionSettings(maxCompletionTokens: 32768, toolOutputTokens: 65536));
+        var client = settings.CreateChatCompletionClient(settings.ChatDeployment, http,
+            new StorageTools(Substitute.For<IQuizStorage>()), factory.CreateLogger<OpenAiChatCompletionClient>());
+        var result = await client.CompleteAsync(settings.Chat.CreateRequest([ChatMessage.FromUser("catalog")], settings.ChatDeployment)
+            with
+        { StorageContext = new(-1, StorageTools.AdministratorUserId, 1, "catalog") });
+
+        Assert.Equal(65536, result.CompletionTokens);
+        Assert.Equal("tool_budget_exceeded", result.ErrorType);
+        Assert.True(logs.Contains("turn_output_limit"));
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, body =>
+            Assert.Equal(32768, JsonDocument.Parse(body).RootElement.GetProperty("max_completion_tokens").GetInt32()));
+    }
+
     [Theory]
     [InlineData("CONTAINS(LOWER(c.question), 'linux') AND c.posted = false")]
     [InlineData("c.question = 'someone''s SELECT * FROM text'")]
@@ -319,7 +413,7 @@ public class StorageToolsTests
         var client = settings.CreateChatCompletionClient(settings.ChatDeployment, http, new StorageTools(repository));
         var result = await client.CompleteAsync(settings.Chat.CreateRequest([ChatMessage.FromUser("list")], settings.ChatDeployment)
             with
-        { StorageContext = new(-1, StorageTools.AdministratorUserId, 1, "list"), InputTokenLimit = 2000 });
+        { StorageContext = new(-1, StorageTools.AdministratorUserId, 1, "list"), InputTokenLimit = 4000 });
         Assert.Equal("tool_budget_exceeded", result.ErrorType);
         Assert.Single(handler.Requests);
         await repository.Received(1).ExecuteAsync("storage_list", Arg.Any<JsonElement>(), Arg.Any<StorageContext>(), 0,

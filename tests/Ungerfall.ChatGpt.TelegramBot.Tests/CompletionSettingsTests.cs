@@ -12,6 +12,26 @@ namespace Ungerfall.ChatGpt.TelegramBot.Tests;
 
 public class CompletionSettingsTests
 {
+    [Fact]
+    public void ReviewedOutputProfileCarriesBothBudgetsWithoutChangingSummary()
+    {
+        var profiles = new[] { "chat-input-budget.json", "chat-output-budget.json" }
+            .SelectMany(path => JsonSerializer.Deserialize<Dictionary<string, int>>(
+                File.ReadAllText(Path.Combine(AppContext.BaseDirectory, path)))!)
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
+        string? Setting(string name) => profiles.TryGetValue(name, out var value)
+            ? value.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
+        var chat = CompletionSettings.FromConfiguration(Setting);
+        var request = chat.CreateRequest([ChatMessage.FromUser("check")], "chat");
+        Assert.Equal(131072, request.InputTokenLimit);
+        Assert.Equal(32768, request.MaxCompletionTokens);
+        Assert.Equal(65536, request.ToolOutputTokenLimit);
+        var summary = CompletionSettings.FromConfiguration(Setting, summary: true);
+        Assert.Equal(2048, summary.MaxCompletionTokens);
+        Assert.Equal(8192, summary.ToolOutputTokens);
+        Assert.Throws<ArgumentOutOfRangeException>(() => new CompletionSettings(toolOutputTokens: 0));
+    }
+
     [Theory]
     [InlineData(131062, true)]
     [InlineData(131063, false)]

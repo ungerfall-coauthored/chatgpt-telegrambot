@@ -1,9 +1,11 @@
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Net;
 using System.Text.Json;
 using System.Text;
+using System.Text.RegularExpressions;
 using Telegram.Bot;
 using Telegram.Bot.Requests;
 using Telegram.Bot.Types;
@@ -442,6 +444,65 @@ public class StorageToolsLiveTests(Xunit.Abstractions.ITestOutputHelper output)
             new PartitionKey(fixture.ChatId), cancellationToken: fixture.Token);
         Assert.Equal(delivered + 1, progress.Resource.NextSequence);
         Assert.False(progress.Resource.Sending);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExactReadOnlyLinuxQuestionRequestUsesWholeSeriesAndEmitsDiagnostics(bool nonFirstUpcomingAnswer)
+    {
+        Skip.IfNot(Environment.GetEnvironmentVariable("STORAGE_TOOLS_LIVE_TEST") == "1", "Storage live tests are not enabled.");
+        await using var fixture = new Fixture();
+        await fixture.SeedBooks(132, 5, true);
+        if (nonFirstUpcomingAnswer)
+        {
+            var last = (await fixture.Container.ReadItemAsync<BookQuiz>(BookQuiz.QuizId(132),
+                new PartitionKey(fixture.ChatId), cancellationToken: fixture.Token)).Resource;
+            (last.Options[0], last.Options[1]) = (last.Options[1], last.Options[0]);
+            await fixture.Container.PatchItemAsync<BookQuiz>(last.Id, new PartitionKey(fixture.ChatId),
+                [PatchOperation.Set("/options", last.Options), PatchOperation.Set("/correctOptionId", 1)],
+                cancellationToken: fixture.Token);
+        }
+        var recording = new RecordingStorage(fixture.Repository);
+        using var logs = new HttpLogCapture();
+        using var factory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        using var transport = new RecordingTransport();
+        using var http = new HttpClient(transport);
+        var azure = AzureOpenAiSettings.FromEnvironment();
+        var client = azure.CreateChatCompletionClient(azure.ChatDeployment, http, new StorageTools(recording),
+            factory.CreateLogger<OpenAiChatCompletionClient>());
+        const string request = "Что-то последние 5 квизов с правильным ответом под номером 1. Проверь все ли вопросы в линукс квизе имеют правильный ответ под 1";
+        var completionRequest = azure.Chat.CreateRequest(
+            [ChatMessage.FromSystem("Follow the current user's request. Keep the final answer short."), ChatMessage.FromUser(request)],
+            azure.ChatDeployment) with
+        { StorageContext = fixture.Context(1, request) };
+        Assert.Equal(32768, completionRequest.MaxCompletionTokens);
+        Assert.Equal(65536, completionRequest.ToolOutputTokenLimit);
+        var completion = await client.CompleteAsync(completionRequest, fixture.Token);
+        output.WriteLine(string.Join(Environment.NewLine, logs.Snapshot()
+            .Where(line => line.StartsWith("AI storage ", StringComparison.Ordinal)).Distinct()));
+        Assert.True(completion.Successful, $"{completion.ErrorType}: {completion.ErrorMessage}");
+        Assert.All(recording.Operations, operation => Assert.Contains(operation, new[] { "storage_list", "storage_get" }));
+        Assert.True(recording.Arguments.Zip(recording.Results).Any(pair =>
+        {
+            if (pair.First.GetProperty("dataset").GetString() != "book_quizzes"
+                || !pair.First.TryGetProperty("predicate", out var predicate)
+                || predicate.GetString()!.Contains("c.sequence", StringComparison.Ordinal)
+                || pair.Second.Status != "ok" || !Data(pair.Second).TryGetProperty("value", out var value)) return false;
+            var comparison = Regex.Match(predicate.GetString()!, @"\bc\.correctOptionId\s*(!=|=)\s*0\b");
+            if (!comparison.Success) return false;
+            if (value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                return comparison.Groups[1].Value == "!=" && value.GetBoolean() == nonFirstUpcomingAnswer;
+            var expected = comparison.Groups[1].Value == "!="
+                ? nonFirstUpcomingAnswer ? 1 : 0 : nonFirstUpcomingAnswer ? 131 : 132;
+            return value.ValueKind == JsonValueKind.Number && value.GetInt32() == expected;
+        }),
+            "No scalar check over the whole series; partial delivered-only checks are insufficient.");
+        Assert.True(logs.Contains("AI storage response"));
+        Assert.True(logs.Contains("AI storage tool"));
+        Assert.True(logs.Contains("AI storage complete"));
+        Assert.All(transport.Requests, body =>
+            Assert.InRange(JsonDocument.Parse(body).RootElement.GetProperty("max_completion_tokens").GetInt32(), 1, 32768));
     }
 
     private static JsonElement Data(StorageResult result) => JsonSerializer.SerializeToElement(result.Data, StorageResult.JsonOptions);

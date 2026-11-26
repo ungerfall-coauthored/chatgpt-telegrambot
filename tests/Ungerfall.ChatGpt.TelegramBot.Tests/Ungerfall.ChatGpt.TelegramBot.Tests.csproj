@@ -27,6 +27,7 @@
   <ItemGroup>
     <None Include="..\..\data\linux-programming-interface-pilot.json" Link="linux-programming-interface-pilot.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\config\chat-input-budget.json" Link="chat-input-budget.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\config\chat-output-budget.json" Link="chat-output-budget.json" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="..\..\src\application\Ungerfall.ChatGpt.TelegramBot.csproj" />
     <ProjectReference Include="..\..\src\presentation.azure-function\azure-function.csproj" />
   </ItemGroup>
