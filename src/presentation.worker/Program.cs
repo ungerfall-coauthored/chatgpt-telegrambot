@@ -4,7 +4,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using System;
-using Telegram.Bot;
 using Ungerfall.ChatGpt.TelegramBot;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
 using Ungerfall.ChatGpt.TelegramBot.Commands;
@@ -33,13 +32,8 @@ IHost host = Host.CreateDefaultBuilder(args)
                 System.Globalization.CultureInfo.InvariantCulture);
         });
 
-        services.AddHttpClient("telegram_bot_client")
-                .AddTypedClient<ITelegramBotClient>((httpClient, sp) =>
-                {
-                    Configuration? botConfig = sp.GetRequiredService<IOptions<Configuration>>().Value;
-                    TelegramBotClientOptions options = new(botConfig.TelegramBotToken);
-                    return new TelegramBotClient(options, httpClient);
-                });
+        services.AddTelegramBotClient("telegram_bot_client",
+            sp => sp.GetRequiredService<IOptions<Configuration>>().Value.TelegramBotToken);
 
         services.AddAzureOpenAi();
         services.AddAzureDecisions();

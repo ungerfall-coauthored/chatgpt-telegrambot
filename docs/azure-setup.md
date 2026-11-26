@@ -12,6 +12,33 @@ service eligibility, region, quotas, and pricing in your subscription; credits d
 not guarantee model availability or cover every charge. Set a Cost Management
 budget and alerts. Alerts are not a hard spending cap.
 
+### Telegram credential-safe diagnostics
+
+Both hosts register Telegram through `AddTelegramBotClient`. It removes the
+default HTTP client loggers and their URL-bearing scopes, and logs only the
+method, status, elapsed time, and failure type. URLs, headers, payloads, and
+exception details are not included. Other HTTP clients retain their diagnostics.
+Header or query-string redaction alone cannot protect Telegram's token-bearing
+URL path. Any additional dependency/exception telemetry collector must also be
+configured not to capture these URLs.
+
+Run the noninteractive regression against the dedicated test bot:
+
+```sh
+TELEGRAM_LOGGING_LIVE_TEST=1 dotnet test tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj -c Release --filter 'FullyQualifiedName~TelegramHttpClientLoggingLiveTests'
+```
+
+Privately supply `IntegrationTests_TELEGRAM_BOT_TOKEN`. The tests call `getMe`
+and deliberately reject `getChat(0)`; they do not send messages or require user
+interaction.
+
+If a token has already appeared in logs, deploy the logging fix, revoke/rotate
+the token through BotFather, update the private deployment settings and any
+consumers, and verify the replacement. Restrict access to affected retained
+telemetry and follow the service's purge/retention procedure. A code fix does
+not invalidate the exposed credential or remove historical logs. Never paste
+the old or replacement token into chat, commits, or issue/PR descriptions.
+
 ## 1. Create Azure OpenAI deployments
 
 1. Activate the Visual Studio Azure benefit, then select that subscription in
