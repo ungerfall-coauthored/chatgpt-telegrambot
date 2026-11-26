@@ -16,7 +16,7 @@ using Ungerfall.ChatGpt.TelegramBot.Database;
 namespace Ungerfall.ChatGpt.TelegramBot;
 
 public sealed class ReleaseAnnouncementService(
-    ReleaseAnnouncementSettings settings, IWhitelist whitelist, TestUsers testUsers,
+    ReleaseAnnouncementSettings settings, long recipientChatId,
     IReleaseAnnouncementRepository repository, IReleaseNotesSource notes,
     SummaryOpenAiClient summaryClient, ITelegramBotClient bot, ILogger<ReleaseAnnouncementService> logger,
     PromptCatalog? prompts = null)
@@ -27,10 +27,10 @@ public sealed class ReleaseAnnouncementService(
         if (!settings.Enabled) return false;
         if (settings.RequireDeploymentApproval
             && !await repository.IsDeploymentApproved(settings.Version, cancellation)) return false;
-        var groups = whitelist.GetAllowedGroupIds().Concat(testUsers.GetOptional()).Where(id => id < 0).Distinct().ToArray();
+        var recipients = new[] { recipientChatId };
         var summaries = new Dictionary<string, Task<string>>();
         var completed = true;
-        foreach (var chatId in groups)
+        foreach (var chatId in recipients)
         {
             cancellation.ThrowIfCancellationRequested();
             ReleaseAnnouncementReceipt? receipt = null;
@@ -98,7 +98,7 @@ public sealed class ReleaseAnnouncementService(
                 if (ex is OperationCanceledException && cancellation.IsCancellationRequested) throw;
             }
         }
-        return completed && groups.Length > 0;
+        return completed;
     }
 
     private async Task<string> CreateSummary(string? previousVersion, CancellationToken cancellation)

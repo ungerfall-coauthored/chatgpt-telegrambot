@@ -312,23 +312,23 @@ No new Azure key or GitHub secret copy is required. GitHub API reads use the
 job's short-lived `GITHUB_TOKEN` with read-only Contents/Pull requests permissions.
 The bot runtime no longer needs release settings or a GitHub token.
 
-Each distinct deployed SHA produces one short Russian announcement for every
-whitelisted group and every **negative** group ID in `TestUsers`; private chats
-and the whitelist's default prompt entry are excluded. Review that whitelist
-before enabling this feature. Groups with the same prior version share one
-Azure summary request during a run. Summaries use the summary deployment and
-its input/output budgets. PR titles are supplied as untrusted data; do not put
-secrets in PR titles.
+Each distinct deployed SHA produces one short Russian announcement to the
+single private Telegram user `66215515`. Whitelisted groups and `TestUsers`
+entries do not receive release announcements. That user must have started the
+deployed bot in a private chat or Telegram will reject the delivery and the
+release job will fail. Summaries use the summary deployment and its input/output
+budgets. PR titles are supplied as untrusted data; do not put secrets in PR
+titles.
 
-After a group's first announcement, notes include merged PRs between its last
+After the first announcement, notes include merged PRs between the last
 announced commit and the current commit, not just the latest PR. For the first
 announcement only PRs merged at the deployed commit are considered, avoiding a
 dump of the entire repository history. Direct commits without associated merged
 PRs get a generic technical-update message. Reverting to an already announced
-SHA does not announce it again. A new group is included on the next pipeline run.
+SHA does not announce it again.
 Comparisons are bounded to 50 commits; larger ranges fail rather than omit changes.
 
-Persistent per-group/version receipts use the existing timed-tasks Cosmos
+Persistent per-recipient/version receipts use the existing timed-tasks Cosmos
 container (`/chatId`) with `ttl: -1`, independently of message retention.
 Conditional writes and five-minute processing leases prevent concurrent sends.
 There are at most three attempts, ten seconds apart, within an eight-minute runner
@@ -336,16 +336,16 @@ deadline. Notes/model failures before sending, and definite Telegram rejections,
 release their processing leases for the next bounded attempt.
 Before calling Telegram, the receipt is durably marked `sending`. An uncertain
 send or crash in that window is **not retried automatically**: avoiding duplicate
-group messages takes priority over guaranteed delivery. Check logs and the
-receipt's stage/message ID before manually recovering a missing announcement.
-Do not delete `sending` or `completed` receipts without checking the group first.
+messages takes priority over guaranteed delivery. Check logs and the receipt's
+stage/message ID before manually recovering a missing announcement. Do not
+delete `sending` or `completed` receipts without checking the private chat first.
 Cosmos and Telegram cannot provide an atomic exactly-once transaction.
 
 No announcement is sent just because a build finishes or a new worker starts.
 After the live health check, the pipeline runner persists a permanent
 `release-deployment:<SHA>` approval in the timed-tasks container's `/chatId=0`
-partition, then executes delivery. The job succeeds only when every expected
-group has a completed receipt with a Telegram message ID. Busy or uncertain
+partition, then executes delivery. The job succeeds only when the configured
+user has a completed receipt with a Telegram message ID. Busy or uncertain
 receipts are failures, not silently successful skips. Failures are visible in
 Actions; there is no background polling or delayed retry after the job exits.
 
@@ -354,8 +354,14 @@ The old activation endpoint and announcement timers are removed. Legacy
 `ReleaseVersion`, and `ReleaseRetryDelayMinutes` app settings no longer control
 the running bot. They can be removed separately; no key rotation is necessary.
 
-For pre-publication integration validation, privately export the Azure OpenAI
-settings plus `GITHUB_TOKEN`, set `AZURE_OPENAI_LIVE_TEST=1`, and run:
+For live Telegram delivery validation, privately configure
+`IntegrationTests_TELEGRAM_BOT_TOKEN` and `BOOK_QUIZ_TEST_CHAT` for the
+dedicated test bot and private test chat, set
+`RELEASE_ANNOUNCEMENT_LIVE_TEST=1`, and run:
+`dotnet test tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj -c Release --filter 'Category=Integration&FullyQualifiedName~ReleaseAnnouncementLiveTests'`.
+This exercises the actual Telegram client and removes its test message after
+delivery. For pre-publication notes-generation validation, privately export the
+Azure OpenAI settings plus `GITHUB_TOKEN`, set `AZURE_OPENAI_LIVE_TEST=1`, and run:
 `dotnet test tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj -c Release --filter 'FullyQualifiedName~PipelineAnnouncementUsesRealGitHubAndAzureSummaryWithoutSendingTelegram'`.
 This exercises the actual GitHub/model clients and summary generation while
 mocking Telegram delivery and Cosmos writes; it does not send production messages.

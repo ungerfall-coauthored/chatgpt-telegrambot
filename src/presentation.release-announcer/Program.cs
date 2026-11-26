@@ -39,7 +39,7 @@ try
     using var telegram = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
     var bot = new TelegramBotClient(Required("TELEGRAM_BOT_TOKEN"), telegram);
     var prompts = PromptCatalog.Load();
-    var announcements = new ReleaseAnnouncementService(settings, new Whitelist(prompts), new TestUsers(), repository,
+    var announcements = new ReleaseAnnouncementService(settings, ReleaseAnnouncementSettings.ReleaseAnnouncementRecipientId, repository,
         new GitHubReleaseNotesSource(github, settings), summary, bot, new ReleaseLogger(), prompts);
     using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
     await repository.ApproveDeployment(version, timeout.Token);
