@@ -85,6 +85,7 @@ internal sealed class HttpLogCapture : ILoggerProvider
     private readonly ConcurrentQueue<string> entries = new();
 
     public bool Contains(string value) => entries.Any(entry => entry.Contains(value, StringComparison.Ordinal));
+    public string[] Snapshot() => entries.ToArray();
 
     public ILogger CreateLogger(string categoryName) => new CaptureLogger(entries, categoryName);
     public void Dispose() { }

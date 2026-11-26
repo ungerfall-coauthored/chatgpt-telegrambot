@@ -19,6 +19,7 @@ DEPLOYMENT_APP = "fapp-ungerfall-chatgpt-telegram-flex"
 DEPLOYMENT_GROUP = "rg-chatgpt"
 POLICY_PATH = Path(__file__).resolve().parents[2] / "config" / "conversation-policy.json"
 CHAT_INPUT_PATH = Path(__file__).resolve().parents[2] / "config" / "chat-input-budget.json"
+CHAT_OUTPUT_PATH = Path(__file__).resolve().parents[2] / "config" / "chat-output-budget.json"
 
 
 def package(source, destination):
@@ -177,6 +178,46 @@ def configure_chat_input_budget(app, group):
           f"{desired['AZURE_OPENAI_CHAT_CONTEXT_WINDOW_TOKENS']}; output and other AI settings are unchanged.")
 
 
+def configure_chat_output_budget(app, group):
+    desired = json.loads(CHAT_OUTPUT_PATH.read_text(encoding="utf-8"))
+    names = {"AZURE_OPENAI_CHAT_MAX_COMPLETION_TOKENS", "AZURE_OPENAI_CHAT_TOOL_OUTPUT_TOKENS"}
+    if (not isinstance(desired, dict) or set(desired) != names
+            or any(type(value) is not int or not 0 < value <= 2147483647 for value in desired.values())):
+        raise ValueError("Managed chat output budget must contain only positive response/tool integer settings")
+
+    def settings():
+        return {entry["name"]: entry["value"] for entry in json.loads(azure(
+            "functionapp", "config", "appsettings", "list",
+            "--name", app, "--resource-group", group, "--output", "json",
+        ))}
+
+    hosted = settings()
+    try:
+        input_tokens = int(hosted.get("AZURE_OPENAI_CHAT_INPUT_TOKENS", "16384"))
+        context_tokens = int(hosted.get("AZURE_OPENAI_CHAT_CONTEXT_WINDOW_TOKENS", "128000"))
+        margin = int(hosted.get("AZURE_OPENAI_CHAT_SAFETY_MARGIN_TOKENS", "1024"))
+    except (ValueError, TypeError):
+        raise ValueError("Hosted input/context/safety budgets must be numeric") from None
+    if (input_tokens <= 0 or margin < 0
+            or input_tokens + desired["AZURE_OPENAI_CHAT_MAX_COMPLETION_TOKENS"] + margin > context_tokens):
+        raise ValueError("Chat input plus reviewed response output/safety budgets must fit the context window")
+    protected = {name: value for name, value in hosted.items()
+                 if name.startswith("AZURE_OPENAI_") and name not in names}
+    if any(hosted.get(name) != str(value) for name, value in desired.items()):
+        azure(
+            "functionapp", "config", "appsettings", "set", "--name", app, "--resource-group", group,
+            "--settings", *(f"{name}={value}" for name, value in sorted(desired.items())),
+            "--output", "none",
+        )
+    confirmed = settings()
+    if (any(confirmed.get(name) != str(value) for name, value in desired.items())
+            or protected != {name: value for name, value in confirmed.items()
+                             if name.startswith("AZURE_OPENAI_") and name not in names}):
+        raise RuntimeError("Chat output budget verification failed or other AI settings changed; deployment must NOT proceed")
+    print(f"Verified chat response output {desired['AZURE_OPENAI_CHAT_MAX_COMPLETION_TOKENS']} and tool-turn output "
+          f"{desired['AZURE_OPENAI_CHAT_TOOL_OUTPUT_TOKENS']}; input and other AI settings are unchanged.")
+
+
 def wait_for_health(url, sha, *, attempts=30, delay=10):
     for attempt in range(attempts):
         try:
@@ -247,6 +288,7 @@ def main():
         print("Verified required hosted announcement settings; credentials were not changed.")
     elif args.phase == "configure":
         configure_chat_input_budget(app, group)
+        configure_chat_output_budget(app, group)
         configure_conversation_policy(app, group)
     else:
         if not args.runner:

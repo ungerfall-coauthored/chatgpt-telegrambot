@@ -1,8 +1,11 @@
 using OpenAI.Chat;
+using Microsoft.Extensions.Logging;
 using System;
 using System.ClientModel;
 using System.Linq;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Ungerfall.ChatGpt.TelegramBot.Storage;
@@ -18,7 +21,7 @@ public sealed record ChatMessage(string Role, string Content)
 
 public sealed record ChatCompletionRequest(
     ChatMessage[] Messages, string Model, float? Temperature, int MaxCompletionTokens, string? User,
-    StorageContext? StorageContext = null, int InputTokenLimit = 16384);
+    StorageContext? StorageContext = null, int InputTokenLimit = 16384, int ToolOutputTokenLimit = 8192);
 
 public sealed record ChatCompletionResult(
     bool Successful, string? Content, string? FinishReason,
@@ -30,7 +33,8 @@ public interface IChatCompletionClient
     Task<ChatCompletionResult> CompleteAsync(ChatCompletionRequest request, CancellationToken cancellationToken = default);
 }
 
-public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? storageTools = null) : IChatCompletionClient
+public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? storageTools = null,
+    ILogger<OpenAiChatCompletionClient>? logger = null) : IChatCompletionClient
 {
     public async Task<ChatCompletionResult> CompleteAsync(
         ChatCompletionRequest request, CancellationToken cancellationToken = default)
@@ -82,15 +86,21 @@ public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? 
             + "Use controlled Cosmos SQL SELECT, WHERE and ORDER BY clauses, not full queries or KQL. "
             + "Prefer scalar VALUE COUNT(1) for counts and VALUE true with limit 1 for existence; do not list full records to count them. "
             + "Use small projections for discovery and fetch full records only when editing them. Answer position 1 is correctOptionId 0. "
-            + "The Linux book quiz series is in book_quizzes and its IDs start with book-quiz:; other quiz IDs, including tool-quiz:, and quizzes merely about Linux topics are in quiz_questions. When the user asks to check or reshuffle the Linux quiz, last N quizzes means the last N delivered book quizzes; "
-            + "do not inspect quiz_questions for it. To check them, read book_quiz_progress.nextSequence "
-            + "and count the sequence range max(1,nextSequence-N) through nextSequence-1 with one VALUE COUNT(1) query; do not list those rows or count all-time or upcoming quizzes. "
+            + "The Linux book quiz series is in book_quizzes and its IDs start with book-quiz:; other quiz IDs, including tool-quiz:, and quizzes merely about Linux topics are in quiz_questions. Do not inspect quiz_questions for the Linux book series. "
+            + "Respect the scope of the current question. A check-and-reshuffle request mentioning last N quizzes means the last N DELIVERED quizzes: "
+            + "first read book_quiz_progress.nextSequence, then run VALUE COUNT(1) with c.sequence >= max(1,nextSequence-N) AND c.sequence < nextSequence AND c.correctOptionId = 0, before shuffling. "
+            + "If fewer than N were delivered, report the actual available number; never claim five delivered when nextSequence=5 (only four exist). "
+            + "Do not replace this required range count with an all-time count, even when every stored answer is first-position. "
+            + "Use the whole-series path ONLY when the current user explicitly asks about ALL/EVERY question: this overrides a preface about the last five. "
+            + "Then check the WHOLE book_quizzes dataset, including upcoming questions. "
+            + "Use one VALUE COUNT(1) query with c.correctOptionId != 0 (zero means all are first-position), or VALUE true with that predicate and limit 1. "
+            + "Do not add a sequence filter or infer the whole series from a delivered-only sample. This read-only check needs no progress or full-record reads. "
             + "An explicit request to reshuffle the Linux quiz means shuffle answer options of upcoming book questions, "
             + "not question text or question order. Use storage_shuffle_options with limit 64 in batches until hasMore is false; "
             + "do not read/rewrite every question. Never guess record IDs: use the exact ID returned by storage. "
             + "Correct invalid queries at most twice. Be decisive and use the fewest tool calls; "
             + "for read-only questions, answer as soon as one query result suffices. "
-            + "Keep storage results concise in your reply. Current user request (JSON string): "
+            + "Keep the final reply to three short sentences; do not list IDs/options or offer extra actions unless asked. Current user request (JSON string): "
             + System.Text.Json.JsonSerializer.Serialize(context.CurrentRequest)));
         foreach (var tool in StorageTools.Definitions) options.Tools.Add(tool);
         options.AllowParallelToolCalls = false;
@@ -102,36 +112,72 @@ public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? 
         var writesBlocked = false;
         var inputTokens = 0;
         var outputTokens = 0;
-        var outputBudget = (int)Math.Min(8192L, (long)request.MaxCompletionTokens * 4);
+        var outputBudget = (int)Math.Min(request.ToolOutputTokenLimit, (long)request.MaxCompletionTokens * 4);
+        var turnId = Guid.NewGuid().ToString("N");
+        var turnStarted = Stopwatch.GetTimestamp();
+        var reasoningTokens = 0;
+        var approximateTokens = 0;
+        var round = 0;
+        logger?.LogInformation("AI storage start: turn={TurnId}, inputLimit={InputLimit}, responseOutputLimit={ResponseOutputLimit}, turnOutputLimit={TurnOutputLimit}",
+            turnId, request.InputTokenLimit, request.MaxCompletionTokens, outputBudget);
+        void Abort(string reason) =>
+            logger?.LogWarning("AI storage abort: turn={TurnId}, reason={AbortReason}, round={Round}, approximateInput={ApproximateInput}, inputLimit={InputLimit}, cumulativeInput={CumulativeInput}, cumulativeOutput={CumulativeOutput}, reasoningTokens={ReasoningTokens}, turnOutputLimit={TurnOutputLimit}, calls={Calls}, invalidCalls={InvalidCalls}, successfulMutations={SuccessfulMutations}, elapsedMs={ElapsedMs}",
+                turnId, reason, Math.Min(round + 1, 8), approximateTokens, request.InputTokenLimit,
+                inputTokens, outputTokens, reasoningTokens, outputBudget, calls, corrections, mutations,
+                Stopwatch.GetElapsedTime(turnStarted).TotalMilliseconds);
         string? lastInvalidTool = null;
         string? lastInvalidCode = null;
-        for (var round = 0; round < 8; round++)
+        for (; round < 8; round++)
         {
             // Include tool schemas and intermediate results, not just the original prompt.
             var counter = new TokenCounter();
-            var approximateTokens = counter.Count(System.Text.Json.JsonSerializer.Serialize(messages))
+            approximateTokens = counter.Count(System.Text.Json.JsonSerializer.Serialize(messages))
                 + StorageTools.Definitions.Sum(tool => counter.Count(tool.FunctionParameters.ToString()));
             if (approximateTokens > request.InputTokenLimit || outputTokens >= outputBudget)
+            {
+                Abort(approximateTokens > request.InputTokenLimit ? "input_limit" : "turn_output_limit");
                 return new(false, null, null, outputTokens, inputTokens, inputTokens + outputTokens,
                     "tool_budget_exceeded", "Storage conversation exceeded its token budget.");
+            }
             options.MaxOutputTokenCount = Math.Min(request.MaxCompletionTokens, outputBudget - outputTokens);
+            logger?.LogInformation("AI storage request: turn={TurnId}, round={Round}, approximateInput={ApproximateInput}, responseOutputLimit={ResponseOutputLimit}, remainingOutput={RemainingOutput}",
+                turnId, round + 1, approximateTokens, options.MaxOutputTokenCount, outputBudget - outputTokens);
             ChatCompletion completion;
+            var roundStarted = Stopwatch.GetTimestamp();
             try
             {
                 completion = (await client.CompleteChatAsync(messages, options, timeout.Token)).Value;
             }
             catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
             {
+                Abort("timeout");
                 return new(false, null, null, ErrorType: "tool_timeout",
                     ErrorMessage: "Storage conversation exceeded its three-minute timeout; writes may already have completed.");
             }
+            catch (ClientResultException error)
+            {
+                logger?.LogWarning("AI storage provider failure: turn={TurnId}, round={Round}, status={Status}",
+                    turnId, round + 1, error.Status);
+                throw;
+            }
             inputTokens += completion.Usage?.InputTokenCount ?? 0;
             outputTokens += completion.Usage?.OutputTokenCount ?? 0;
+            reasoningTokens += completion.Usage?.OutputTokenDetails?.ReasoningTokenCount ?? 0;
+            logger?.LogInformation("AI storage response: turn={TurnId}, round={Round}, finish={FinishReason}, input={InputTokens}, output={OutputTokens}, reasoning={ReasoningTokens}, cumulativeOutput={CumulativeOutput}, toolCalls={ToolCalls}, elapsedMs={ElapsedMs}",
+                turnId, round + 1, completion.FinishReason, completion.Usage?.InputTokenCount,
+                completion.Usage?.OutputTokenCount, completion.Usage?.OutputTokenDetails?.ReasoningTokenCount,
+                outputTokens, completion.ToolCalls.Count, Stopwatch.GetElapsedTime(roundStarted).TotalMilliseconds);
             if (completion.FinishReason != ChatFinishReason.ToolCalls)
             {
                 if (completion.FinishReason == ChatFinishReason.Length)
+                {
+                    Abort("response_output_limit");
                     return new(false, null, "length", outputTokens, inputTokens, inputTokens + outputTokens,
                         "tool_budget_exceeded", "The model exhausted its per-response output limit; writes may already have completed.");
+                }
+                logger?.LogInformation("AI storage complete: turn={TurnId}, rounds={Rounds}, calls={Calls}, invalidCalls={InvalidCalls}, successfulMutations={SuccessfulMutations}, cumulativeInput={CumulativeInput}, cumulativeOutput={CumulativeOutput}, reasoningTokens={ReasoningTokens}, elapsedMs={ElapsedMs}",
+                    turnId, round + 1, calls, corrections, mutations, inputTokens, outputTokens, reasoningTokens,
+                    Stopwatch.GetElapsedTime(turnStarted).TotalMilliseconds);
                 var result = Result(completion);
                 return result with { PromptTokens = inputTokens, CompletionTokens = outputTokens, TotalTokens = inputTokens + outputTokens };
             }
@@ -139,16 +185,40 @@ public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? 
             foreach (var call in completion.ToolCalls)
             {
                 if (++calls > 12)
+                {
+                    Abort("tool_call_limit");
                     return new(false, null, null, outputTokens, inputTokens, inputTokens + outputTokens,
                         "tool_call_limit", $"Storage tool-call limit reached: calls={calls}, limit=12, successfulMutations={mutations}.");
+                }
                 if (corrections > 2)
+                {
+                    Abort("query_recovery_limit");
                     return new(false, null, null, outputTokens, inputTokens, inputTokens + outputTokens,
                         "tool_query_recovery_exhausted", $"Storage query recovery exhausted: invalidCalls={corrections}, limit=2, lastTool={lastInvalidTool}, lastCode={lastInvalidCode}, successfulMutations={mutations}.");
+                }
                 var mutation = call.FunctionName is "storage_create" or "storage_update" or "storage_delete" or "storage_shuffle_options";
-                var result = mutation && writesBlocked
-                    ? new StorageResult("error", "forbidden", "Further writes are blocked after a conflict or uncertain outcome. Report the failure.")
-                    : await storageTools!.ExecuteAsync(call.FunctionName, call.FunctionArguments.ToString(),
-                        context, mutation ? mutations + 1 : 0, timeout.Token);
+                var toolStarted = Stopwatch.GetTimestamp();
+                logger?.LogInformation("AI storage tool request: turn={TurnId}, round={Round}, call={Call}, tool={ToolName}, shape={QueryShape}",
+                    turnId, round + 1, calls, StorageToolDiagnostics.Name(call.FunctionName),
+                    StorageToolDiagnostics.Describe(call.FunctionArguments.ToString()));
+                StorageResult result;
+                try
+                {
+                    result = mutation && writesBlocked
+                        ? new StorageResult("error", "forbidden", "Further writes are blocked after a conflict or uncertain outcome. Report the failure.")
+                        : await storageTools!.ExecuteAsync(call.FunctionName, call.FunctionArguments.ToString(),
+                            context, mutation ? mutations + 1 : 0, timeout.Token);
+                }
+                catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
+                {
+                    Abort("tool_timeout");
+                    throw;
+                }
+                logger?.LogInformation("AI storage tool: turn={TurnId}, round={Round}, call={Call}, tool={ToolName}, shape={QueryShape}, status={ResultStatus}, code={ResultCode}, scalarResult={ScalarResult}, resultBytes={ResultBytes}, elapsedMs={ElapsedMs}",
+                    turnId, round + 1, calls, StorageToolDiagnostics.Name(call.FunctionName),
+                    StorageToolDiagnostics.Describe(call.FunctionArguments.ToString()), result.Status, result.Code,
+                    StorageToolDiagnostics.ScalarResult(call.FunctionArguments.ToString(), result),
+                    Encoding.UTF8.GetByteCount(result.ToJson()), Stopwatch.GetElapsedTime(toolStarted).TotalMilliseconds);
                 if (mutation && result.Status == "ok") mutations++;
                 if (mutation && result.Status != "ok" && result.Code != "validation_error") writesBlocked = true;
                 if (result.Code is "invalid_query" or "validation_error")
@@ -167,6 +237,7 @@ public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? 
                 }
             }
         }
+        Abort("round_limit");
         return new(false, null, null, outputTokens, inputTokens, inputTokens + outputTokens,
             "tool_round_limit", $"Storage conversation exceeded its round limit: rounds=8, calls={calls}, invalidCalls={corrections}, successfulMutations={mutations}.");
     }

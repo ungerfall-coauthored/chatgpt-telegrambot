@@ -13,18 +13,21 @@ public sealed class CompletionSettings
 
     public CompletionSettings(
         int contextWindowTokens = 128000, int inputTokens = DefaultChatInputTokens,
-        int maxCompletionTokens = 2048, int safetyMarginTokens = 1024, float? temperature = 0f)
+        int maxCompletionTokens = 2048, int safetyMarginTokens = 1024, float? temperature = 0f,
+        int toolOutputTokens = 8192)
     {
         if (contextWindowTokens <= 0 || inputTokens <= 0 || maxCompletionTokens <= 0 || safetyMarginTokens < 0
             || (long)inputTokens + maxCompletionTokens + safetyMarginTokens > contextWindowTokens)
             throw new ArgumentException("Input tokens + max completion tokens + safety margin must fit the configured context window.");
         if (temperature.HasValue && (!float.IsFinite(temperature.Value) || temperature is < 0 or > 2))
             throw new ArgumentOutOfRangeException(nameof(temperature));
+        if (toolOutputTokens <= 0) throw new ArgumentOutOfRangeException(nameof(toolOutputTokens));
         ContextWindowTokens = contextWindowTokens;
         InputTokens = inputTokens;
         MaxCompletionTokens = maxCompletionTokens;
         SafetyMarginTokens = safetyMarginTokens;
         Temperature = temperature;
+        ToolOutputTokens = toolOutputTokens;
     }
 
     public int ContextWindowTokens { get; }
@@ -32,6 +35,7 @@ public sealed class CompletionSettings
     public int MaxCompletionTokens { get; }
     public int SafetyMarginTokens { get; }
     public float? Temperature { get; }
+    public int ToolOutputTokens { get; }
 
     public ChatCompletionRequest CreateRequest(
         IList<ChatMessage> messages, string deployment, ITokenCounter? tokenCounter = null,
@@ -44,7 +48,8 @@ public sealed class CompletionSettings
         var outputTokens = maxCompletionTokens ?? MaxCompletionTokens;
         if (outputTokens <= 0 || outputTokens > MaxCompletionTokens)
             throw new ArgumentOutOfRangeException(nameof(maxCompletionTokens));
-        return new ChatCompletionRequest(messages.ToArray(), deployment, Temperature, outputTokens, user, InputTokenLimit: InputTokens);
+        return new ChatCompletionRequest(messages.ToArray(), deployment, Temperature, outputTokens, user,
+            InputTokenLimit: InputTokens, ToolOutputTokenLimit: ToolOutputTokens);
     }
 
     public static CompletionSettings FromEnvironment(bool summary = false) =>
@@ -65,7 +70,8 @@ public sealed class CompletionSettings
             ReadInt(prefix + "SAFETY_MARGIN_TOKENS", 1024),
             string.Equals(temperature, "omit", StringComparison.OrdinalIgnoreCase) ? null
                 : temperature == null ? summary ? .2f : 0f
-                : float.Parse(temperature, CultureInfo.InvariantCulture));
+                : float.Parse(temperature, CultureInfo.InvariantCulture),
+            ReadInt(prefix + "TOOL_OUTPUT_TOKENS", 8192));
     }
 
 }
