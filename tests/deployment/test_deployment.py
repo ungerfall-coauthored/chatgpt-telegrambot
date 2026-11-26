@@ -151,6 +151,47 @@ class DeploymentTests(unittest.TestCase):
                     self.assertIn("ConversationPolicyChats=" + json.dumps(updated, separators=(",", ":")), setters[0])
                 self.assertNotIn(secrets["AZURE_DECISIONS_API_KEY"], output.getvalue() + repr(azure.call_args_list))
 
+    def test_chat_input_budget_changes_only_input_and_context_and_is_idempotent(self):
+        desired = json.loads(deployment.CHAT_INPUT_PATH.read_text())
+        original = {
+            "AZURE_OPENAI_CHAT_MAX_COMPLETION_TOKENS": "8192",
+            "AZURE_OPENAI_SUMMARY_MAX_COMPLETION_TOKENS": "4096",
+            "AZURE_OPENAI_AUTONOMOUS_MAX_COMPLETION_TOKENS": "120",
+            "AZURE_OPENAI_API_KEY": "test-key-not-for-cli-or-logs",
+        }
+        updated = {**original, **{name: str(value) for name, value in desired.items()}}
+
+        def listing(values):
+            return json.dumps([{"name": name, "value": value} for name, value in values.items()])
+
+        for responses, writes in (([listing(original), "", listing(updated)], 1),
+                                  ([listing(updated), listing(updated)], 0)):
+            with self.subTest(writes=writes), patch.object(deployment, "azure", side_effect=responses) as azure, \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                deployment.configure_chat_input_budget(APP, GROUP)
+                setters = [call.args for call in azure.call_args_list if "set" in call.args]
+                self.assertEqual(writes, len(setters))
+                if setters:
+                    start = setters[0].index("--settings") + 1
+                    end = setters[0].index("--output")
+                    self.assertEqual({f"{name}={value}" for name, value in desired.items()}, set(setters[0][start:end]))
+                self.assertNotIn(original["AZURE_OPENAI_API_KEY"], output.getvalue() + repr(azure.call_args_list))
+
+    def test_chat_input_budget_blocks_output_changes_and_failed_verification(self):
+        desired = json.loads(deployment.CHAT_INPUT_PATH.read_text())
+        original = {"AZURE_OPENAI_CHAT_MAX_COMPLETION_TOKENS": "8192"}
+        for confirmed in ({**original, **{name: str(value) for name, value in desired.items()},
+                           "AZURE_OPENAI_CHAT_MAX_COMPLETION_TOKENS": "16384"}, original):
+            listing = lambda values: json.dumps([{"name": name, "value": value} for name, value in values.items()])
+            with self.subTest(confirmed=confirmed), patch.object(deployment, "azure",
+                    side_effect=[listing(original), "", listing(confirmed)]), self.assertRaises(RuntimeError):
+                deployment.configure_chat_input_budget(APP, GROUP)
+        unsafe = {**desired, "AZURE_OPENAI_CHAT_MAX_COMPLETION_TOKENS": 16384}
+        with patch.object(deployment.Path, "read_text", return_value=json.dumps(unsafe)), \
+                patch.object(deployment, "azure") as azure, self.assertRaises(ValueError):
+            deployment.configure_chat_input_budget(APP, GROUP)
+        azure.assert_not_called()
+
     def test_managed_policy_rejects_bad_source_missing_credentials_and_invalid_hosted_state(self):
         for desired in ([], {"123": {}}, {"-123": {"Unknown": True}}, {"-123": {"NaturalRequestsEnabled": "true"}}):
             with self.subTest(desired=desired), patch.object(deployment.Path, "read_text", return_value=json.dumps(desired)), \
