@@ -117,7 +117,7 @@ jobs:
           AZURE_FUNCTIONAPP_NAME: ${{ vars.AZURE_FUNCTIONAPP_NAME }}
           AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
         run: python3 scripts/azure/deployment.py validate
-      - name: Apply reviewed conversation policy
+      - name: Apply reviewed input budget and conversation policy
         if: steps.current.outputs.deploy == 'true'
         env:
           AZURE_FUNCTIONAPP_NAME: ${{ vars.AZURE_FUNCTIONAPP_NAME }}

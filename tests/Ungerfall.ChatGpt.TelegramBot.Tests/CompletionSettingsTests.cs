@@ -6,11 +6,34 @@ using Ungerfall.ChatGpt.TelegramBot.Commands;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
 using Ungerfall.ChatGpt.TelegramBot.Database;
+using System.Text.Json;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Tests;
 
 public class CompletionSettingsTests
 {
+    [Theory]
+    [InlineData(131062, true)]
+    [InlineData(131063, false)]
+    public void ReviewedChatProfileEnforces128KInputWithoutChangingOutput(int contentTokens, bool allowed)
+    {
+        var profile = JsonSerializer.Deserialize<Dictionary<string, int>>(
+            File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "chat-input-budget.json")))!;
+        var settings = CompletionSettings.FromConfiguration(name =>
+            profile.TryGetValue(name, out var value) ? value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : name == "AZURE_OPENAI_CHAT_MAX_COMPLETION_TOKENS" ? "8192" : null);
+        var counter = Substitute.For<ITokenCounter>();
+        counter.Count(Arg.Any<string>()).Returns(call => ((string)call[0]).Length);
+        ChatMessage[] messages = [ChatMessage.FromUser(new string('x', contentTokens))];
+        if (allowed)
+        {
+            var request = settings.CreateRequest(messages, "chat", counter);
+            Assert.Equal(8192, request.MaxCompletionTokens);
+        }
+        else
+            Assert.Throws<InvalidOperationException>(() => settings.CreateRequest(messages, "chat", counter));
+    }
+
     [Theory]
     [InlineData(128000, 127000, 2048, 1024)]
     [InlineData(int.MaxValue, int.MaxValue, 1, 0)]
@@ -53,7 +76,9 @@ public class CompletionSettingsTests
         whitelist.GetSystemRoleMessage(1).Returns("system");
         var messages = Enumerable.Range(1, 6).Reverse().Select(i => new TelegramMessage
         {
-            User = "friend", Message = i + new string('x', 1000), MessageId = i,
+            User = "friend",
+            Message = i + new string('x', 1000),
+            MessageId = i,
         }).ToArray();
         repository.GetAllOrderByDateDescending(1, Arg.Any<CancellationToken>()).Returns(messages.ToAsyncEnumerable());
 

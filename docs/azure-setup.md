@@ -152,6 +152,20 @@ never raw Cosmos exceptions, keys, or stack traces. Further writes are blocked
 after conflicts or uncertain failures. A failed final response does not imply
 that earlier writes were rolled back.
 
+The fork deployment applies `config/chat-input-budget.json`: **131072 chat
+input tokens** and a **400000-token model context capacity**. Only these two
+non-secret settings are managed; chat/summary/autonomous output settings and
+the 8192-token tool-turn output cap are unchanged. The deployment verifies the
+existing output/safety budgets fit and that other AI settings remain untouched.
+These deployment overrides do not change the generic library defaults.
+
+An automated live regression sends more than the old 16384-token input budget
+through the actual configured chat client, with the same output ceiling:
+
+```sh
+AZURE_OPENAI_LIVE_TEST=1 dotnet test tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj -c Release --filter 'FullyQualifiedName~ReviewedChatInputBudgetAcceptsLargeInput'
+```
+
 Noninteractive live tests require the existing private Azure/Cosmos settings:
 
 ```sh

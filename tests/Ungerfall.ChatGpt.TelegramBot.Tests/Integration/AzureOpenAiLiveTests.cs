@@ -10,6 +10,37 @@ namespace Ungerfall.ChatGpt.TelegramBot.Tests.Integration;
 public class AzureOpenAiLiveTests
 {
     [SkippableFact]
+    public async Task ReviewedChatInputBudgetAcceptsLargeInputWithUnchangedOutputCeiling()
+    {
+        Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");
+        var azure = AzureOpenAiSettings.FromEnvironment();
+        var budget = JsonSerializer.Deserialize<Dictionary<string, int>>(
+            File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "chat-input-budget.json")))!;
+        var profile = CompletionSettings.FromConfiguration(name => budget.TryGetValue(name, out var value)
+            ? value.ToString(System.Globalization.CultureInfo.InvariantCulture) : Environment.GetEnvironmentVariable(name));
+        var counter = new TokenCounter();
+        const string padding = "context note.\n";
+        var history = string.Concat(Enumerable.Repeat(padding,
+            (CompletionSettings.DefaultChatInputTokens + 4096) / counter.Count(padding) + 1));
+        ChatMessage[] messages =
+        [
+            ChatMessage.FromSystem("The following history is synthetic padding for an input-budget test. Do not analyze it. Reply only OK."),
+            ChatMessage.FromUser("<history>\n" + history + "</history>\nReply only OK."),
+        ];
+        Assert.Throws<InvalidOperationException>(() => new CompletionSettings(
+            contextWindowTokens: profile.ContextWindowTokens, maxCompletionTokens: profile.MaxCompletionTokens,
+            temperature: profile.Temperature).CreateRequest(messages, azure.ChatDeployment, counter));
+        var request = profile.CreateRequest(messages, azure.ChatDeployment, counter);
+        Assert.Equal(azure.Chat.MaxCompletionTokens, request.MaxCompletionTokens);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var result = await azure.CreateChatCompletionClient(azure.ChatDeployment).CompleteAsync(request, timeout.Token);
+        Assert.True(result.Successful, $"Large-input chat failed: {result.ErrorType}");
+        Assert.True(result.PromptTokens > CompletionSettings.DefaultChatInputTokens,
+            "Azure did not report processing input beyond the old budget.");
+        Assert.Equal("OK", result.Content?.Trim());
+    }
+
+    [SkippableFact]
     public async Task DecisionAndConfiguredPersonaWorkThroughUpdateHandler()
     {
         Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");
