@@ -11,6 +11,7 @@ using Telegram.Bot.Types.Enums;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
 using Ungerfall.ChatGpt.TelegramBot.Commands;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
+using Ungerfall.ChatGpt.TelegramBot.Storage;
 
 namespace Ungerfall.ChatGpt.TelegramBot;
 
@@ -320,7 +321,9 @@ public class UpdateHandler
         var autonomous = decision == ConversationDecision.Interjection;
         var (chatGptResponse, tokens) = await SendChatGptMessage(messageText, user, chatId, cancellation,
             !activateBot ? receipt.DecisionInput : null, autonomous: autonomous, silentOnFailure: !activateBot,
-            messageThreadId: msg.MessageThreadId);
+            messageThreadId: msg.MessageThreadId,
+            storageContext: !autonomous && msg.From != null
+                ? new StorageContext(chatId, msg.From.Id, msg.Id, messageText) : null);
         if (!activateBot && (string.IsNullOrWhiteSpace(chatGptResponse)
             || autonomous && !await _conversationPolicy.TryMarkInterjection(msg, cancellation)))
         {
@@ -378,7 +381,8 @@ public class UpdateHandler
 
     private async Task<(string, int?)> SendChatGptMessage(
         string message, string user, long chatId, CancellationToken cancellation,
-        string? decisionContext = default, bool autonomous = false, bool silentOnFailure = false, int? messageThreadId = default)
+        string? decisionContext = default, bool autonomous = false, bool silentOnFailure = false, int? messageThreadId = default,
+        StorageContext? storageContext = null)
     {
         _logger.LogInformation("Sending {Message} from {User}", message, user);
 
@@ -404,7 +408,8 @@ public class UpdateHandler
         }
         var completionResult = await _chatClient.CompleteAsync(
             _azureOpenAi.Chat.CreateRequest(gptMessage, _azureOpenAi.ChatDeployment, _tokenCounter, user,
-                maxCompletionTokens: autonomous ? _azureOpenAi.AutonomousMaxCompletionTokens : null),
+                maxCompletionTokens: autonomous ? _azureOpenAi.AutonomousMaxCompletionTokens : null)
+                with { StorageContext = storageContext },
             cancellation);
         _logger.LogInformation("Tokens: {@tokens}",
             new

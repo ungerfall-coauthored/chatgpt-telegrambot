@@ -47,6 +47,63 @@ See the request settings below before switching model families. Optional
 no-mention replies use a separate **Microsoft-Decision-1.1** deployment in
 Foundry, described below. They do not call the public OpenAI API.
 
+### Storage function tools
+
+The chat deployment must support strict function calling. Storage tools are
+available only for Telegram user `66215515` in an already allowed chat; they
+are not exposed to other users, unsolicited replies, scheduled summaries,
+image generation, or message shrinking.
+
+`storage_catalog` and `storage_schema` describe the registered
+`quiz_questions` dataset. It maps to the existing
+`CosmosTimedTasksContainer` through the DAL, with the current Telegram chat
+as the server-selected `/chatId` partition. No new container or credentials
+are needed. Ordinary CS, film, and video-game quizzes are supported; book
+quizzes, chat history, receipts, and deployment data are not editable.
+
+`storage_list` accepts a bounded Cosmos SQL **WHERE predicate**, not KQL or
+arbitrary SQL. The server permits documented fields/operators only, reads at
+most two pages and 10 records, limits result data to 12 KB, and stops after
+observing more than 50 RU. RU is measured after a page returns: this is not a
+hard Azure spending cap. There is no unrestricted pagination.
+`storage_get`, `storage_create`, `storage_update`, and `storage_delete`
+operate through the same DAL. Creates validate 1-5 questions per call;
+updates/deletes require the current version and reject posted quizzes or
+quizzes reserved for scheduled delivery.
+Mutations and durable retry receipts commit atomically in the same partition.
+The scheduler takes a per-chat, per-quiz-type delivery lock and reserves a quiz
+using its Cosmos ETag before sending its poll. Completion atomically marks it
+posted and removes the lock. An interrupted or uncertain delivery leaves the
+lock in place and requires manual reconciliation rather than an automatic
+resend. Check Telegram delivery before clearing `deliveryPending` or marking the
+quiz posted and deleting its `quiz-delivery-lock:<quiz-type>` record.
+Predicates containing backslash escapes are rejected to prevent SQL scope
+escapes.
+
+The SDK loop preserves assistant tool calls and their matching tool results.
+It is limited to 8 rounds, 12 calls, two error-correction retries, a
+three-minute overall timeout and 15 seconds per DAL call. Each model response
+retains the configured output ceiling; the whole tool turn is capped at four
+times that ceiling, up to 8192 output tokens. Input includes tool schemas and
+intermediate results. Query errors are returned as sanitized tool results,
+never raw Cosmos exceptions, keys, or stack traces. Further writes are blocked
+after conflicts or uncertain failures. A failed final response does not imply
+that earlier writes were rolled back.
+
+Noninteractive live tests require the existing private Azure/Cosmos settings:
+
+```sh
+STORAGE_TOOLS_LIVE_TEST=1 dotnet test tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj -c Release --filter 'FullyQualifiedName~StorageToolsLiveTests'
+```
+
+`dotnet test` does not load `local.settings.json`; load settings privately into
+the test process. Tests use unique synthetic partitions in the configured
+container, validate real CRUD/query failures, and invoke a synthetic Telegram
+update through the real Azure chat client. Telegram transport is mocked:
+no messages, button presses, or Telegram credentials are required. Fixture
+records and receipts are deleted afterwards. The tools' intermediate arguments
+and results never enter ordinary chat history; the final bot reply does.
+
 ### Optional reply decisions: Microsoft-Decision-1.1
 
 Deploy **Microsoft-Decision-1.1**, not a generative chat model, from the Foundry

@@ -30,4 +30,10 @@ public class TimedTaskQuiz
     public string? ComputedHash { get; set; }
     [JsonPropertyName("hashAlgorithm")]
     public string? HashAlgorithm { get; set; }
+    [JsonPropertyName("deliveryPending")]
+    public bool DeliveryPending { get; set; }
+    [JsonIgnore]
+    public string? ETag { get; set; }
+    [JsonIgnore]
+    public string? DeliveryLockETag { get; set; }
 }
