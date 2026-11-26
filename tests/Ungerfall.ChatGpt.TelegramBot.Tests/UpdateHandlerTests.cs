@@ -237,19 +237,60 @@ public class UpdateHandlerTest
         await imageClient.Received(1).GenerateAsync(" a fox", Arg.Any<CancellationToken>());
     }
 
+    [Theory]
+    [InlineData("tool_budget_exceeded", "Слишком тяжело. Контекст переполнен")]
+    [InlineData("tool_timeout", "ChatGPT request wasn't successful")]
+    public async Task Handle_ShouldMapCompletionFailureToUserResponse(string errorType, string expected)
+    {
+        const long chatId = 123;
+        var bot = Substitute.For<ITelegramBotClient>();
+        var repository = Substitute.For<ITelegramMessageRepository>();
+        var whitelist = Substitute.For<IWhitelist>();
+        var conversations = Substitute.For<IConversationRepository>();
+        var completion = Substitute.For<IChatCompletionClient>();
+        var chat = new Chat { Id = chatId, Type = ChatType.Private };
+        whitelist.IsGroupAllowedToUseBot(chatId).Returns(true);
+        whitelist.GetSystemRoleMessage(chatId).Returns("System role");
+        repository.GetAllOrderByDateDescending(chatId, Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<TelegramMessage>().ToAsyncEnumerable());
+        conversations.Begin(chatId, 42, Arg.Any<CancellationToken>()).Returns(new ConversationReceipt());
+        completion.CompleteAsync(Arg.Any<ChatCompletionRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new ChatCompletionResult(false, null, null, TotalTokens: 21135, ErrorType: errorType));
+        bot.SendRequest<Message>(Arg.Any<SendMessageRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new Message { Id = 43, Chat = chat, Date = DateTime.UtcNow });
+        var handler = CreateHandler(bot, repository, whitelist, conversations, chatClient: completion);
+
+        await handler.Handle(new Update
+        {
+            Message = new Message
+            {
+                Id = 42, Chat = chat, Date = DateTime.UtcNow,
+                From = new User { Id = 456, FirstName = "Alice" }, Text = "Hello",
+            },
+        }, default);
+
+        await bot.Received(1).SendRequest<Message>(
+            Arg.Is<SendMessageRequest>(request => request.Text == $"{expected}{Environment.NewLine}tokens: 21135"),
+            Arg.Any<CancellationToken>());
+        await repository.Received(1).Create(
+            Arg.Is<TelegramMessage>(message => message.MessageId == 43 && message.Message == expected),
+            Arg.Any<CancellationToken>());
+    }
+
     private static UpdateHandler CreateHandler(
         ITelegramBotClient bot,
         ITelegramMessageRepository repository,
         IWhitelist whitelist,
         IConversationRepository conversations,
-        IImageGenerationClient? imageClient = null)
+        IImageGenerationClient? imageClient = null,
+        IChatCompletionClient? chatClient = null)
     {
         var tokenCounter = Substitute.For<ITokenCounter>();
         var azure = TestAzureSettings.Create();
         return new UpdateHandler(
             bot,
             Substitute.For<ILogger<UpdateHandler>>(),
-            Substitute.For<IChatCompletionClient>(),
+            chatClient ?? Substitute.For<IChatCompletionClient>(),
             repository,
             tokenCounter,
             new TooLongDidNotReadToday(repository, tokenCounter,

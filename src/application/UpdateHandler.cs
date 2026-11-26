@@ -426,7 +426,10 @@ public class UpdateHandler
         else
         {
             _logger.LogError("ChatGPT error: {@error}", new { completionResult.ErrorType, completionResult.ErrorMessage });
-            return (silentOnFailure ? string.Empty : "ChatGPT request wasn't successful", completionResult.TotalTokens);
+            var errorResponse = completionResult.ErrorType == "tool_budget_exceeded"
+                ? "Слишком тяжело. Контекст переполнен"
+                : "ChatGPT request wasn't successful";
+            return (silentOnFailure ? string.Empty : errorResponse, completionResult.TotalTokens);
         }
     }
 
