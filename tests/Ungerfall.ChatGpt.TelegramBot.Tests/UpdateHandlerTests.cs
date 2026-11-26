@@ -137,4 +137,132 @@ public class UpdateHandlerTest
         var assistant = Assert.Single(gptMessages, m => m.Role == "assistant");
         Assert.Equal("Assistant reply", assistant.Content);
     }
+
+    [Fact]
+    public async Task Handle_ShouldRecordPhotoActivityWithCaption()
+    {
+        const long chatId = 123;
+        var bot = Substitute.For<ITelegramBotClient>();
+        var repository = Substitute.For<ITelegramMessageRepository>();
+        var whitelist = Substitute.For<IWhitelist>();
+        var events = new List<TelegramMessage>();
+        whitelist.IsGroupAllowedToUseBot(chatId).Returns(true);
+        repository.Create(Arg.Do<TelegramMessage>(events.Add), Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+        var handler = CreateHandler(bot, repository, whitelist, Substitute.For<IConversationRepository>());
+
+        await handler.Handle(new Update
+        {
+            Message = new Message
+            {
+                Id = 42,
+                Chat = new Chat { Id = chatId, Type = ChatType.Group },
+                Date = DateTime.UtcNow,
+                From = new User { Id = 456, FirstName = "Alice" },
+                Photo = [new PhotoSize { FileId = "photo", FileUniqueId = "photo-unique" }],
+                Caption = "The new menu",
+            },
+        }, default);
+
+        var entry = Assert.Single(events);
+        Assert.Equal("Alice", entry.User);
+        Assert.Equal("[activity] sent an image; caption: The new menu", entry.Message);
+        await bot.DidNotReceive().SendRequest<Message>(Arg.Any<SendMessageRequest>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Handle_ShouldRecordEmptyTextAsActivity()
+    {
+        const long chatId = 123;
+        var repository = Substitute.For<ITelegramMessageRepository>();
+        var whitelist = Substitute.For<IWhitelist>();
+        var events = new List<TelegramMessage>();
+        whitelist.IsGroupAllowedToUseBot(chatId).Returns(true);
+        repository.Create(Arg.Do<TelegramMessage>(events.Add), Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+        var handler = CreateHandler(Substitute.For<ITelegramBotClient>(), repository, whitelist,
+            Substitute.For<IConversationRepository>());
+
+        await handler.Handle(new Update
+        {
+            Message = new Message
+            {
+                Id = 42,
+                Chat = new Chat { Id = chatId, Type = ChatType.Group },
+                Date = DateTime.UtcNow,
+                From = new User { Id = 456, FirstName = "Alice" },
+                Text = string.Empty,
+            },
+        }, default);
+
+        Assert.Equal("[activity] sent an empty message", Assert.Single(events).Message);
+    }
+
+    [Fact]
+    public async Task Handle_ShouldRecordImageCommandAsActivity()
+    {
+        const long chatId = 123;
+        var bot = Substitute.For<ITelegramBotClient>();
+        var repository = Substitute.For<ITelegramMessageRepository>();
+        var whitelist = Substitute.For<IWhitelist>();
+        var conversations = Substitute.For<IConversationRepository>();
+        var imageClient = Substitute.For<IImageGenerationClient>();
+        var events = new List<TelegramMessage>();
+        var sent = new Message { Id = 43, Chat = new Chat { Id = chatId, Type = ChatType.Group } };
+        whitelist.IsGroupAllowedToUseBot(chatId).Returns(true);
+        conversations.Begin(chatId, 42, Arg.Any<CancellationToken>()).Returns(new ConversationReceipt());
+        conversations.SaveReceipt(Arg.Any<ConversationReceipt>(), Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+        repository.Create(Arg.Do<TelegramMessage>(events.Add), Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+        imageClient.GenerateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new ImageGenerationResult(true, "aGVsbG8=", null));
+        bot.SendRequest<Message>(Arg.Any<SendPhotoRequest>(), Arg.Any<CancellationToken>()).Returns(sent);
+        var handler = CreateHandler(bot, repository, whitelist, conversations, imageClient: imageClient);
+
+        await handler.Handle(new Update
+        {
+            Message = new Message
+            {
+                Id = 42,
+                Chat = new Chat { Id = chatId, Type = ChatType.Group },
+                Date = DateTime.UtcNow,
+                From = new User { Id = 456, FirstName = "Alice" },
+                Text = "/image a fox",
+            },
+        }, default);
+
+        var entry = Assert.Single(events);
+        Assert.Equal("[activity] requested image generation: a fox", entry.Message);
+        await imageClient.Received(1).GenerateAsync(" a fox", Arg.Any<CancellationToken>());
+    }
+
+    private static UpdateHandler CreateHandler(
+        ITelegramBotClient bot,
+        ITelegramMessageRepository repository,
+        IWhitelist whitelist,
+        IConversationRepository conversations,
+        IImageGenerationClient? imageClient = null)
+    {
+        var tokenCounter = Substitute.For<ITokenCounter>();
+        var azure = TestAzureSettings.Create();
+        return new UpdateHandler(
+            bot,
+            Substitute.For<ILogger<UpdateHandler>>(),
+            Substitute.For<IChatCompletionClient>(),
+            repository,
+            tokenCounter,
+            new TooLongDidNotReadToday(repository, tokenCounter,
+                new SummaryOpenAiClient(Substitute.For<IChatCompletionClient>(), "test-summary"),
+                Substitute.For<ILogger<TooLongDidNotReadToday>>(), bot, whitelist,
+                Substitute.For<ITimedTaskExecutionRepository>(), azure),
+            whitelist,
+            new GenerateImage(new ImageOpenAiClient(imageClient), Substitute.For<ILogger<GenerateImage>>(), bot),
+            new TestUsers(),
+            conversations,
+            new ConversationPolicy(conversations, new ConversationPolicyChats(), Substitute.For<ILogger<ConversationPolicy>>(),
+                new DecisionsClient(new HttpClient(), Substitute.For<ILogger<DecisionsClient>>(), new AzureDecisionsSettings())),
+            new PersonalSettings(bot, Substitute.For<ILogger<PersonalSettings>>(), azure),
+            azure);
+    }
 }
