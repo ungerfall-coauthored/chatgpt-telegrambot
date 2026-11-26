@@ -236,12 +236,13 @@ public class StorageToolsLiveTests(Xunit.Abstractions.ITestOutputHelper output)
         var recording = new RecordingStorage(fixture.Repository);
         var azure = AzureOpenAiSettings.FromEnvironment();
         var client = azure.CreateChatCompletionClient(azure.ChatDeployment, storageTools: new StorageTools(recording));
-        const string request = "For a query-recovery test, call storage_list on quiz_questions FIRST with predicate exactly 'c.question =' and limit 1. It is deliberately malformed. After the error, correct it to a valid query and report whether Linux quizzes exist. Do not create or change anything.";
+        const string request = "For a query-recovery test, call storage_list on quiz_questions FIRST with predicate exactly 'c.question =' and limit 1. It is deliberately malformed. After the error, correct it to a valid query and report whether quiz_questions mentions TCP. Do not create or change anything.";
         var result = await client.CompleteAsync(azure.Chat.CreateRequest([ChatMessage.FromUser(request)], azure.ChatDeployment)
             with
         { StorageContext = fixture.Context(1, request) }, fixture.Token);
         Assert.True(result.Successful, $"{result.ErrorType}: {result.ErrorMessage}; "
-            + string.Join(", ", recording.Operations.Zip(recording.Results, (operation, item) => $"{operation}:{item.Status}:{item.Code}")));
+            + string.Join(", ", recording.Operations.Zip(recording.Results, (operation, item) => $"{operation}:{item.Status}:{item.Code}:{item.Message}"))
+            + "; arguments: " + string.Join("; ", recording.Arguments.Select(arguments => arguments.GetRawText())));
         Assert.Contains(recording.Results, result => result.Code == "invalid_query");
         Assert.Contains(recording.Results, result => result.Status == "ok");
         Assert.All(recording.Operations, operation => Assert.Equal("storage_list", operation));
@@ -382,10 +383,13 @@ public class StorageToolsLiveTests(Xunit.Abstractions.ITestOutputHelper output)
         var diagnostics = string.Join("; ", recording.Operations.Zip(recording.Arguments,
             (operation, arguments) => $"{operation}:{arguments.GetRawText()}"));
         Assert.True(completion.Successful, $"{completion.ErrorType}: {completion.ErrorMessage}; {diagnostics}");
-        Assert.Contains(recording.Arguments, arguments => arguments.TryGetProperty("select", out var select)
-            && select.GetString()?.Contains("COUNT", StringComparison.OrdinalIgnoreCase) == true);
-        Assert.Contains(recording.Results, result => result.Status == "ok" && Data(result).TryGetProperty("value", out var value)
-            && value.ValueKind == JsonValueKind.Number && value.GetInt32() == 5);
+        var results = string.Join("; ", recording.Results.Select(result => result.ToJson()));
+        Assert.True(recording.Arguments.Any(arguments => arguments.TryGetProperty("select", out var select)
+            && select.GetString()?.Contains("COUNT", StringComparison.OrdinalIgnoreCase) == true),
+            $"No scalar count: {completion.Content}; {diagnostics}; results: {results}");
+        Assert.True(recording.Results.Any(result => result.Status == "ok" && Data(result).TryGetProperty("value", out var value)
+            && value.ValueKind == JsonValueKind.Number && value.GetInt32() == 5),
+            $"No count of 5: {completion.Content}; {diagnostics}; results: {results}");
         Assert.True(recording.Operations.Contains("storage_shuffle_options"), $"No options shuffle: {completion.Content}; {diagnostics}");
         Assert.DoesNotContain("storage_update", recording.Operations);
         Assert.DoesNotContain("storage_create", recording.Operations);

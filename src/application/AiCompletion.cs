@@ -82,12 +82,14 @@ public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? 
             + "Use controlled Cosmos SQL SELECT, WHERE and ORDER BY clauses, not full queries or KQL. "
             + "Prefer scalar VALUE COUNT(1) for counts and VALUE true with limit 1 for existence; do not list full records to count them. "
             + "Use small projections for discovery and fetch full records only when editing them. Answer position 1 is correctOptionId 0. "
-            + "Linux book quizzes are in book_quizzes. To check the last N delivered book quizzes, read book_quiz_progress.nextSequence "
-            + "and count the sequence range max(1,nextSequence-N) through nextSequence-1; do not count all-time or upcoming quizzes. "
+            + "Linux book quizzes are in book_quizzes. When the user asks to check or reshuffle the Linux quiz, last N quizzes means the last N delivered book quizzes; "
+            + "do not inspect quiz_questions for it. To check them, read book_quiz_progress.nextSequence "
+            + "and count the sequence range max(1,nextSequence-N) through nextSequence-1 with one VALUE COUNT(1) query; do not list those rows or count all-time or upcoming quizzes. "
             + "An explicit request to reshuffle the Linux quiz means shuffle answer options of upcoming book questions, "
             + "not question text or question order. Use storage_shuffle_options in batches until hasMore is false; "
             + "do not read/rewrite every question. Never guess record IDs: use the exact ID returned by storage. "
-            + "Correct invalid queries at most twice. "
+            + "Correct invalid queries at most twice. Be decisive and use the fewest tool calls; "
+            + "for read-only questions, answer as soon as one query result suffices. "
             + "Keep storage results concise in your reply. Current user request (JSON string): "
             + System.Text.Json.JsonSerializer.Serialize(context.CurrentRequest)));
         foreach (var tool in StorageTools.Definitions) options.Tools.Add(tool);
