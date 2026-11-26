@@ -9,6 +9,7 @@ using Ungerfall.ChatGpt.TelegramBot.Configuration;
 using Ungerfall.ChatGpt.TelegramBot.Database;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Tests;
+
 public class UpdateHandlerTest
 {
     [Fact]
@@ -240,6 +241,9 @@ public class UpdateHandlerTest
     [Theory]
     [InlineData("tool_budget_exceeded", "Слишком тяжело. Контекст переполнен")]
     [InlineData("tool_timeout", "ChatGPT request wasn't successful")]
+    [InlineData("tool_query_recovery_exhausted", "Не удалось исправить запрос к хранилищу.")]
+    [InlineData("tool_call_limit", "Не удалось завершить операции с хранилищем за один запрос. Некоторые изменения могли уже сохраниться.")]
+    [InlineData("tool_round_limit", "Не удалось завершить операции с хранилищем за один запрос. Некоторые изменения могли уже сохраниться.")]
     public async Task Handle_ShouldMapCompletionFailureToUserResponse(string errorType, string expected)
     {
         const long chatId = 123;
@@ -264,8 +268,11 @@ public class UpdateHandlerTest
         {
             Message = new Message
             {
-                Id = 42, Chat = chat, Date = DateTime.UtcNow,
-                From = new User { Id = 456, FirstName = "Alice" }, Text = "Hello",
+                Id = 42,
+                Chat = chat,
+                Date = DateTime.UtcNow,
+                From = new User { Id = 456, FirstName = "Alice" },
+                Text = "Hello",
             },
         }, default);
 

@@ -426,9 +426,13 @@ public class UpdateHandler
         else
         {
             _logger.LogError("ChatGPT error: {@error}", new { completionResult.ErrorType, completionResult.ErrorMessage });
-            var errorResponse = completionResult.ErrorType == "tool_budget_exceeded"
-                ? "Слишком тяжело. Контекст переполнен"
-                : "ChatGPT request wasn't successful";
+            var errorResponse = completionResult.ErrorType switch
+            {
+                "tool_budget_exceeded" => "Слишком тяжело. Контекст переполнен",
+                "tool_query_recovery_exhausted" => "Не удалось исправить запрос к хранилищу.",
+                "tool_call_limit" or "tool_round_limit" => "Не удалось завершить операции с хранилищем за один запрос. Некоторые изменения могли уже сохраниться.",
+                _ => "ChatGPT request wasn't successful",
+            };
             return (silentOnFailure ? string.Empty : errorResponse, completionResult.TotalTokens);
         }
     }

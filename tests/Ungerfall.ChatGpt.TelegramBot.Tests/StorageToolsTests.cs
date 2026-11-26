@@ -61,6 +61,7 @@ public class StorageToolsTests
     [InlineData("c.id", "_rid != ''", "")]
     [InlineData("c.id", "c.nextSequence = 1", "")]
     [InlineData("c.id", "", "c.sequence DESC OFFSET 0 LIMIT 1000")]
+    [InlineData("c.id", "", "c.sequence DESC, c._ts DESC")]
     public void SelectControlsRejectInternalFieldsScopeEscapesAndUnboundedQueries(string select, string predicate, string orderBy) =>
         Assert.Throws<ArgumentException>(() => QuizStorageQuery.Create(JsonSerializer.SerializeToElement(new
         {
@@ -182,6 +183,78 @@ public class StorageToolsTests
             JsonSerializer.Deserialize<JsonElement>("""{"predicate":42,"limit":1}"""),
             new(-1, StorageTools.AdministratorUserId, 1, "list"), 0, default);
         Assert.Equal("invalid_query", result.Code);
+    }
+
+    [Theory]
+    [InlineData("SC1001 syntax error; Authorization: secret-value https://private.example", "SC1001")]
+    [InlineData("The order by query does not have a corresponding composite index. secret-value", "one sort field")]
+    public async Task CosmosQueryErrorsGiveSafeActionableFeedback(string providerDetails, string expected)
+    {
+        var container = Substitute.For<Container>();
+        var cosmos = Substitute.For<CosmosClient>();
+        cosmos.GetContainer("test", "quizzes").Returns(container);
+        var iterator = Substitute.For<FeedIterator<JsonElement>>();
+        iterator.HasMoreResults.Returns(true);
+        iterator.ReadNextAsync(Arg.Any<CancellationToken>()).Returns(
+            Task.FromException<FeedResponse<JsonElement>>(new CosmosException(providerDetails, HttpStatusCode.BadRequest, 0, "activity", 1)));
+        container.GetItemQueryIterator<JsonElement>(Arg.Any<QueryDefinition>(), Arg.Any<string>(), Arg.Any<QueryRequestOptions>())
+            .Returns(iterator);
+        var repository = new QuizStorageRepository(cosmos, Microsoft.Extensions.Options.Options.Create(new CosmosDbOptions
+        { DatabaseId = "test", TimedTasksContainerId = "quizzes" }), NullLogger<QuizStorageRepository>.Instance);
+
+        var result = await repository.ExecuteAsync("storage_list", JsonSerializer.SerializeToElement(new
+        { dataset = "quiz_questions", select = "c.id", predicate = "c.question =", orderBy = (string?)null, limit = 1 }),
+            new(-1, StorageTools.AdministratorUserId, 1, "query"), 0, default);
+
+        Assert.Equal("invalid_query", result.Code);
+        Assert.Contains(expected, result.Message);
+        Assert.DoesNotContain("secret-value", result.ToJson());
+        Assert.DoesNotContain("Authorization", result.ToJson());
+        Assert.DoesNotContain("https://", result.ToJson());
+    }
+
+    [Fact]
+    public async Task RecoveryExhaustionReportsInvalidCallsInsteadOfContextOverflow()
+    {
+        var repository = Substitute.For<IQuizStorage>();
+        repository.ExecuteAsync(Arg.Any<string>(), Arg.Any<JsonElement>(), Arg.Any<StorageContext>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new StorageResult("error", "invalid_query", "SC1001: comparison needs a value."));
+        using var handler = new SequenceHandler(Enumerable.Range(1, 4).Select(index =>
+            ToolResponse(index.ToString(), "storage_list", """{"dataset":"quiz_questions","predicate":"c.question =","limit":1}""")).ToArray());
+        using var http = new HttpClient(handler);
+        var settings = TestAzureSettings.Create();
+        var client = settings.CreateChatCompletionClient(settings.ChatDeployment, http, new StorageTools(repository));
+
+        var result = await client.CompleteAsync(settings.Chat.CreateRequest([ChatMessage.FromUser("query")], settings.ChatDeployment)
+            with
+        { StorageContext = new(-1, StorageTools.AdministratorUserId, 1, "query") });
+
+        Assert.Equal("tool_query_recovery_exhausted", result.ErrorType);
+        Assert.Contains("invalidCalls=3", result.ErrorMessage);
+        Assert.Contains("lastTool=storage_list", result.ErrorMessage);
+        Assert.Contains("lastCode=invalid_query", result.ErrorMessage);
+        Assert.Equal(4, handler.Requests.Count);
+        await repository.Received(3).ExecuteAsync("storage_list", Arg.Any<JsonElement>(), Arg.Any<StorageContext>(), 0,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RoundExhaustionIsNotReportedAsContextOverflow()
+    {
+        using var handler = new SequenceHandler(Enumerable.Range(1, 8)
+            .Select(index => ToolResponse(index.ToString(), "storage_catalog", "{}")).ToArray());
+        using var http = new HttpClient(handler);
+        var settings = TestAzureSettings.Create();
+        var client = settings.CreateChatCompletionClient(settings.ChatDeployment, http,
+            new StorageTools(Substitute.For<IQuizStorage>()));
+
+        var result = await client.CompleteAsync(settings.Chat.CreateRequest([ChatMessage.FromUser("catalog")], settings.ChatDeployment)
+            with
+        { StorageContext = new(-1, StorageTools.AdministratorUserId, 1, "catalog") });
+
+        Assert.Equal("tool_round_limit", result.ErrorType);
+        Assert.Contains("rounds=8", result.ErrorMessage);
+        Assert.Equal(8, handler.Requests.Count);
     }
 
     [Fact]
