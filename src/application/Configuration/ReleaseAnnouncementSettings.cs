@@ -7,6 +7,8 @@ namespace Ungerfall.ChatGpt.TelegramBot.Configuration;
 
 public sealed class ReleaseAnnouncementSettings
 {
+    public const long ReleaseAnnouncementRecipientId = 66215515;
+
     public ReleaseAnnouncementSettings(
         bool enabled = false, string? version = null,
         string repository = "ungerfall-coauthored/chatgpt-telegrambot", int maxCommits = 50,

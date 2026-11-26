@@ -39,7 +39,7 @@ try
     using var telegram = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
     var bot = new TelegramBotClient(Required("TELEGRAM_BOT_TOKEN"), telegram);
     var prompts = PromptCatalog.Load();
-    var announcements = new ReleaseAnnouncementService(settings, new Whitelist(prompts), new TestUsers(), repository,
+    var announcements = new ReleaseAnnouncementService(settings, ReleaseAnnouncementSettings.ReleaseAnnouncementRecipientId, repository,
         new GitHubReleaseNotesSource(github, settings), summary, bot, new ReleaseLogger(), prompts);
     using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
     await repository.ApproveDeployment(version, timeout.Token);
@@ -47,10 +47,10 @@ try
     {
         if (await announcements.Execute(timeout.Token))
         {
-            Console.WriteLine($"Release announcement delivery confirmed for every configured group at {version}.");
+            Console.WriteLine($"Release announcement delivery confirmed for user {ReleaseAnnouncementSettings.ReleaseAnnouncementRecipientId} at {version}.");
             return 0;
         }
-        Console.Error.WriteLine($"Release announcement attempt {attempt}/3 did not confirm every delivery.");
+        Console.Error.WriteLine($"Release announcement attempt {attempt}/3 did not confirm delivery to the configured recipient.");
         if (attempt < 3) await Task.Delay(TimeSpan.FromSeconds(10), timeout.Token);
     }
     Console.Error.WriteLine("Release announcement failed; inspect receipts before recovering uncertain sends.");
