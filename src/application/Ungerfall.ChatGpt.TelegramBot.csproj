@@ -7,10 +7,11 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Azure.Messaging.ServiceBus" Version="7.18.1" />
-    <PackageReference Include="Betalgo.OpenAI" Version="8.7.1" />
     <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.43.1" />
     <PackageReference Include="Microsoft.Extensions.Azure" Version="1.7.5" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.15" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+    <PackageReference Include="OpenAI" Version="2.15.0" />
     <PackageReference Include="SharpToken" Version="2.0.3" />
     <PackageReference Include="Telegram.Bot" Version="22.10.3.3" />
   </ItemGroup>

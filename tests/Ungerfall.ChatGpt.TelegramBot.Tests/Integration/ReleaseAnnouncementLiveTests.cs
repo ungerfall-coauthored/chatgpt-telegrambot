@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Logging.Abstractions;
-using OpenAI.Interfaces;
 using Telegram.Bot;
 using Telegram.Bot.Types.Enums;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
@@ -35,7 +34,7 @@ public class ReleaseAnnouncementLiveTests
         notes.GetTitles(null, Version, Arg.Any<CancellationToken>()).Returns([]);
         var service = new ReleaseAnnouncementService(
             new ReleaseAnnouncementSettings(enabled: true, version: Version, requireDeploymentApproval: false),
-            chatId, repository, notes, new SummaryOpenAiClient(Substitute.For<IOpenAIService>(), "summary"),
+            chatId, repository, notes, new SummaryOpenAiClient(Substitute.For<IChatCompletionClient>(), "summary"),
             bot, NullLogger<ReleaseAnnouncementService>.Instance);
 
         try

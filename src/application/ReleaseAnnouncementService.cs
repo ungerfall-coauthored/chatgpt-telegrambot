@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Logging;
-using OpenAI.ObjectModels.RequestModels;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -110,11 +109,9 @@ public sealed class ReleaseAnnouncementService(
                 ChatMessage.FromSystem(_prompts.ReleaseAnnouncement),
                 ChatMessage.FromUser(JsonSerializer.Serialize(titles)),
             ], summaryClient.Deployment);
-        var response = await summaryClient.Service.ChatCompletion.CreateCompletion(request, summaryClient.Deployment,
-            cancellationToken: cancellation);
-        var choice = response.Choices?.FirstOrDefault();
-        var summary = choice?.Message?.Content?.Trim();
-        if (!response.Successful || string.IsNullOrWhiteSpace(summary) || choice?.FinishReason == "length")
+        var response = await summaryClient.Client.CompleteAsync(request, cancellation);
+        var summary = response.Content?.Trim();
+        if (!response.Successful || string.IsNullOrWhiteSpace(summary) || response.FinishReason == "length")
             throw new InvalidOperationException("Release summary generation failed or returned incomplete content.");
         if (summary.Length > 3500)
             summary = summary[..(char.IsHighSurrogate(summary[3499]) ? 3499 : 3500)];

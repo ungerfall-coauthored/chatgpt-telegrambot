@@ -1,8 +1,4 @@
 using Microsoft.Extensions.Logging;
-using OpenAI.Interfaces;
-using OpenAI.ObjectModels.RequestModels;
-using OpenAI.ObjectModels.ResponseModels;
-using OpenAI.ObjectModels.SharedModels;
 using System.Collections.Immutable;
 using Telegram.Bot;
 using Telegram.Bot.Requests;
@@ -27,8 +23,8 @@ public class DailySummaryTest
         var loggerMock = Substitute.For<ILogger<DailySummary>>();
         var whitelistMock = Substitute.For<IWhitelist>();
         var messageRepoMock = Substitute.For<ITelegramMessageRepository>();
-        var openAiServiceMock = Substitute.For<IOpenAIService>();
-        var requests = new List<ChatCompletionCreateRequest>();
+        var chatClientMock = Substitute.For<IChatCompletionClient>();
+        var requests = new List<ChatCompletionRequest>();
         var messages = Enumerable.Range(1, 3).Select(i => new TelegramMessage
         {
             Id = $"message:{i}",
@@ -42,18 +38,14 @@ public class DailySummaryTest
         whitelistMock.GetSummarySystemRoleMessage(chatId).Returns("System role");
         messageRepoMock.Get(chatId, Arg.Any<DateOnly>(), Arg.Any<CancellationToken>())
             .Returns(messages.OrderByDescending(x => x.Date).ToAsyncEnumerable());
-        openAiServiceMock.ChatCompletion.CreateCompletion(
-                Arg.Do<ChatCompletionCreateRequest>(requests.Add),
-                Arg.Any<string>(),
+        chatClientMock.CompleteAsync(
+                Arg.Do<ChatCompletionRequest>(requests.Add),
                 Arg.Any<CancellationToken>())
-            .Returns(new ChatCompletionCreateResponse
-            {
-                Choices = [new ChatChoiceResponse { Message = ChatMessage.FromAssistant("Summary") }]
-            });
+            .Returns(new ChatCompletionResult(true, "Summary", "stop"));
 
         var task = new DailySummary(
             chatsMock, botClientMock, executionRepoMock, loggerMock,
-            whitelistMock, messageRepoMock, new SummaryOpenAiClient(openAiServiceMock, "summary",
+            whitelistMock, messageRepoMock, new SummaryOpenAiClient(chatClientMock, "summary",
                 new CompletionSettings(inputTokens: 3072, maxCompletionTokens: 512, temperature: null)));
 
         // Act
@@ -67,7 +59,7 @@ public class DailySummaryTest
         Assert.All(requests, request =>
         {
             Assert.Equal("System role", request.Messages.First().Content);
-            Assert.Equal(3, request.Messages.Count);
+            Assert.Equal(3, request.Messages.Length);
             Assert.Equal(512, request.MaxCompletionTokens);
             Assert.Null(request.Temperature);
         });
@@ -90,7 +82,7 @@ public class DailySummaryTest
         var loggerMock = Substitute.For<ILogger<DailySummary>>();
         var whitelistMock = Substitute.For<IWhitelist>();
         var messageRepoMock = Substitute.For<ITelegramMessageRepository>();
-        var openAiServiceMock = Substitute.For<IOpenAIService>();
+        var chatClientMock = Substitute.For<IChatCompletionClient>();
         var sentMessages = new List<SendMessageRequest>();
         var summary = "*" + new string('a', 4094) + "😀" + new string('b', 4100);
 
@@ -101,14 +93,10 @@ public class DailySummaryTest
             {
                 new() { User = "User", Message = "Hello" }
             }.ToAsyncEnumerable());
-        openAiServiceMock.ChatCompletion.CreateCompletion(
-                Arg.Any<ChatCompletionCreateRequest>(),
-                Arg.Any<string>(),
+        chatClientMock.CompleteAsync(
+                Arg.Any<ChatCompletionRequest>(),
                 Arg.Any<CancellationToken>())
-            .Returns(new ChatCompletionCreateResponse
-            {
-                Choices = [new ChatChoiceResponse { Message = ChatMessage.FromAssistant(summary) }]
-            });
+            .Returns(new ChatCompletionResult(true, summary, "stop"));
         botClientMock.SendRequest<Message>(
                 Arg.Do<SendMessageRequest>(sentMessages.Add),
                 Arg.Any<CancellationToken>())
@@ -116,7 +104,7 @@ public class DailySummaryTest
 
         var task = new DailySummary(
             chatsMock, botClientMock, executionRepoMock, loggerMock,
-            whitelistMock, messageRepoMock, new SummaryOpenAiClient(openAiServiceMock, "summary"));
+            whitelistMock, messageRepoMock, new SummaryOpenAiClient(chatClientMock, "summary"));
 
         // Act
         await task.Execute();

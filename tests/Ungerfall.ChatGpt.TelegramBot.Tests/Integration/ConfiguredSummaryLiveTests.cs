@@ -1,7 +1,6 @@
 using System.Collections.Immutable;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging.Abstractions;
-using OpenAI.Managers;
 using Telegram.Bot;
 using Telegram.Bot.Requests;
 using Telegram.Bot.Types;
@@ -23,7 +22,7 @@ public class ConfiguredSummaryLiveTests
     {
         Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");
         var azure = AzureOpenAiSettings.FromEnvironment();
-        using var summary = new SummaryOpenAiClient(new OpenAIService(azure.CreateOptions(azure.SummaryDeployment)),
+        using var summary = new SummaryOpenAiClient(azure.CreateChatCompletionClient(azure.SummaryDeployment),
             azure.SummaryDeployment, azure.Summary);
         var history = Substitute.For<ITelegramMessageRepository>();
         history.Get(-1, Arg.Any<DateOnly>(), Arg.Any<CancellationToken>()).Returns(
@@ -51,7 +50,8 @@ public class ConfiguredSummaryLiveTests
     {
         Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");
         var azure = AzureOpenAiSettings.FromEnvironment();
-        using var service = new OpenAIService(azure.CreateOptions(azure.ChatDeployment));
+        using var service = new SummaryOpenAiClient(
+            azure.CreateChatCompletionClient(azure.ChatDeployment), azure.ChatDeployment, azure.Chat);
         var history = Substitute.For<ITelegramMessageRepository>();
         var message = new TelegramMessage
         {
@@ -67,7 +67,7 @@ public class ConfiguredSummaryLiveTests
         counter.Count(message.Message).Returns(1024);
         counter.Count(Arg.Is<string>(text => text != message.Message)).Returns(10);
 
-        await new ShrinkMessage(service, counter, NullLogger<ShrinkMessage>.Instance, history, azure)
+        await new ShrinkMessage(service.Client, counter, NullLogger<ShrinkMessage>.Instance, history, azure)
             .Run(new TimerInfo { ScheduleStatus = default, IsPastDue = default });
 
         await history.Received(1).Update(Arg.Is<TelegramMessage>(m => m.IsShrunk && !string.IsNullOrWhiteSpace(m.Message)),

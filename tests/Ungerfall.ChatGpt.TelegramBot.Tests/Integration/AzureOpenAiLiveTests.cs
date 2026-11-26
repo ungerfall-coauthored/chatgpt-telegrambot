@@ -1,6 +1,4 @@
 using Microsoft.Extensions.Logging.Abstractions;
-using OpenAI.Managers;
-using OpenAI.ObjectModels.RequestModels;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
@@ -21,10 +19,11 @@ public class AzureOpenAiLiveTests
         var groupPrompt = PromptCatalog.Load().ChatSystem(-1001034436662);
         var persona = "Ты участник общего чата друзей. " + groupPrompt[groupPrompt.IndexOf("Говори от себя", StringComparison.Ordinal)..];
         using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
-        using var service = new OpenAIService(azure.CreateOptions(azure.ChatDeployment));
+        using var service = new SummaryOpenAiClient(
+            azure.CreateChatCompletionClient(azure.ChatDeployment), azure.ChatDeployment, azure.Chat);
         using var scenario = new NaturalRequestScenario(
             new DecisionsClient(http, NullLogger<DecisionsClient>.Instance, decisions),
-            completion: service, azureSettings: azure, systemPrompt: persona);
+            completion: service.Client, azureSettings: azure, systemPrompt: persona);
 
         await scenario.Run();
 
@@ -130,24 +129,21 @@ public class AzureOpenAiLiveTests
             (settings.SummaryDeployment, settings.Summary),
         })
         {
-            using var service = new OpenAIService(settings.CreateOptions(deployment));
-            var result = await service.ChatCompletion.CreateCompletion(
-                profile.CreateRequest([ChatMessage.FromUser("Reply with the word OK.")], deployment), deployment);
-            Assert.True(result.Successful, $"Azure chat failed: {result.Error?.Type}");
-            Assert.False(string.IsNullOrWhiteSpace(result.Choices?.FirstOrDefault()?.Message?.Content));
+            using var service = new SummaryOpenAiClient(
+                settings.CreateChatCompletionClient(deployment), deployment, profile);
+            var result = await service.Client.CompleteAsync(
+                profile.CreateRequest([ChatMessage.FromUser("Reply with the word OK.")], deployment));
+            Assert.True(result.Successful, $"Azure chat failed: {result.ErrorType}");
+            Assert.False(string.IsNullOrWhiteSpace(result.Content));
         }
 
         if (settings.ImageDeployment != null)
         {
-            using var service = new OpenAIService(settings.CreateOptions(settings.ImageDeployment, image: true));
-            var result = await service.Image.CreateImage(new ImageCreateRequest
-            {
-                Prompt = "A simple blue circle on a white background.",
-                N = 1,
-                Size = "1024x1024"
-            });
-            Assert.True(result.Successful, $"Azure image generation failed: {result.Error?.Type}");
-            Assert.NotEmpty(Convert.FromBase64String(Assert.Single(result.Results).B64));
+            using var service = new ImageOpenAiClient(settings.CreateImageGenerationClient(
+                new HttpClient(), settings.ImageDeployment));
+            var result = await service.Client!.GenerateAsync("A simple blue circle on a white background.");
+            Assert.True(result.Successful, $"Azure image generation failed: {result.ErrorMessage}");
+            Assert.NotEmpty(Convert.FromBase64String(result.Base64!));
         }
     }
 }

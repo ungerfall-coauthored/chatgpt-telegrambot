@@ -1,10 +1,6 @@
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using OpenAI.ObjectModels.RequestModels;
-using OpenAI.Interfaces;
-using OpenAI.ObjectModels.ResponseModels;
-using OpenAI.ObjectModels.SharedModels;
 using Telegram.Bot;
 using Ungerfall.ChatGpt.TelegramBot.Commands;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
@@ -141,12 +137,9 @@ public class CompletionSettingsTests
         var repository = Substitute.For<ITelegramMessageRepository>();
         repository.Get(123, Arg.Any<DateOnly>(), Arg.Any<CancellationToken>()).Returns(
             new[] { new TelegramMessage { User = "friend", Message = "hello" } }.ToAsyncEnumerable());
-        var client = Substitute.For<IOpenAIService>();
-        client.ChatCompletion.CreateCompletion(Arg.Any<ChatCompletionCreateRequest>(), "test-summary", Arg.Any<CancellationToken>())
-            .Returns(new ChatCompletionCreateResponse
-            {
-                Choices = [new ChatChoiceResponse { Message = ChatMessage.FromAssistant("summary"), FinishReason = finishReason }]
-            });
+        var client = Substitute.For<IChatCompletionClient>();
+        client.CompleteAsync(Arg.Any<ChatCompletionRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new ChatCompletionResult(true, "summary", finishReason));
         var cache = Substitute.For<ITimedTaskExecutionRepository>();
         cache.BeginTldr(123, Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new TldrCache());
         var whitelist = Substitute.For<IWhitelist>();
@@ -158,9 +151,9 @@ public class CompletionSettingsTests
 
         await command.Execute(123);
 
-        await client.ChatCompletion.Received(1).CreateCompletion(
-            Arg.Is<ChatCompletionCreateRequest>(r => r.Model == "test-summary" && r.Temperature == null && r.MaxCompletionTokens == 4096),
-            "test-summary", Arg.Any<CancellationToken>());
+        await client.Received(1).CompleteAsync(
+            Arg.Is<ChatCompletionRequest>(r => r.Model == "test-summary" && r.Temperature == null && r.MaxCompletionTokens == 4096),
+            Arg.Any<CancellationToken>());
         await cache.Received(shouldCache ? 1 : 0).CompleteTldr(Arg.Any<TldrCache>(), Arg.Any<CancellationToken>());
     }
 }

@@ -1,4 +1,3 @@
-﻿using OpenAI.ObjectModels.RequestModels;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
 using Ungerfall.ChatGpt.TelegramBot.Database;
 
