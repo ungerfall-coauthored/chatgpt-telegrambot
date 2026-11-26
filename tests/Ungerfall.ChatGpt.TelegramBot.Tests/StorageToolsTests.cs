@@ -2,6 +2,9 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
+using Microsoft.Azure.Cosmos;
+using Microsoft.Extensions.Logging.Abstractions;
+using Ungerfall.ChatGpt.TelegramBot.Database;
 using Ungerfall.ChatGpt.TelegramBot.Storage;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Tests;
@@ -23,6 +26,97 @@ public class StorageToolsTests
     [InlineData(@"c.question = 'x\' OR c.posted = false OR c.question = '")]
     public void PredicateRejectsScopeEscapeAndUnsupportedQueries(string predicate) =>
         Assert.Throws<ArgumentException>(() => QuizStorageRepository.ValidatePredicate(predicate));
+
+    [Theory]
+    [InlineData("VALUE COUNT(1)", "", true)]
+    [InlineData("COUNT(1) AS count", "", true)]
+    [InlineData("c.id, c.sequence, c.correctOptionId", "c.sequence DESC", false)]
+    [InlineData("VALUE true", "", false)]
+    [InlineData("c.id, c.options, c.version", "", false)]
+    [InlineData("VALUE {\"id\":c.id,\"options\":c.options,\"version\":c.version}", "", false)]
+    public void SelectControlsCannotReplaceServerOwnedDatasetFilter(string select, string orderBy, bool aggregate)
+    {
+        var query = QuizStorageQuery.Create(JsonSerializer.SerializeToElement(new
+        {
+            dataset = "book_quizzes",
+            select,
+            predicate = "c.sequence >= 6 AND c.sequence < 11 AND c.correctOptionId = 0",
+            orderBy,
+            limit = 5,
+        }));
+        Assert.Contains("FROM c WHERE c.type = @book AND c.seriesId = @series AND (", query.Definition.QueryText);
+        Assert.Equal(aggregate, query.Aggregate);
+        Assert.DoesNotContain("TOP", aggregate ? query.Definition.QueryText : "");
+        Assert.DoesNotContain("c.version", query.Definition.QueryText);
+    }
+
+    [Theory]
+    [InlineData("SELECT VALUE COUNT(1) FROM c", "", "")]
+    [InlineData("c._etag", "", "")]
+    [InlineData("c.chatId", "", "")]
+    [InlineData("c.id FROM c JOIN x IN c.options", "", "")]
+    [InlineData("VALUE COUNT(1)", "", "c.sequence DESC")]
+    [InlineData("VALUE c.id AS\talias", "", "")]
+    [InlineData("c.id", "true) OR true --", "")]
+    [InlineData("c.id", "c.nextSequence = 1", "")]
+    [InlineData("c.id", "", "c.sequence DESC OFFSET 0 LIMIT 1000")]
+    public void SelectControlsRejectInternalFieldsScopeEscapesAndUnboundedQueries(string select, string predicate, string orderBy) =>
+        Assert.Throws<ArgumentException>(() => QuizStorageQuery.Create(JsonSerializer.SerializeToElement(new
+        {
+            dataset = "book_quizzes",
+            select,
+            predicate,
+            orderBy,
+            limit = 5,
+        })));
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ScalarCountsAreCompleteOrFailWithoutReturningPartialData(bool unfinished)
+    {
+        var container = Substitute.For<Container>();
+        var cosmos = Substitute.For<CosmosClient>();
+        cosmos.GetContainer("test", "quizzes").Returns(container);
+        var iterator = Substitute.For<FeedIterator<JsonElement>>();
+        var response = Substitute.For<FeedResponse<JsonElement>>();
+        response.RequestCharge.Returns(1);
+        response.GetEnumerator().Returns(_ => (unfinished ? Array.Empty<JsonElement>() : new[] { JsonSerializer.SerializeToElement(5) })
+            .AsEnumerable().GetEnumerator());
+        var more = true;
+        iterator.HasMoreResults.Returns(_ => more);
+        iterator.ReadNextAsync(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            more = unfinished;
+            return Task.FromResult(response);
+        });
+        container.GetItemQueryIterator<JsonElement>(Arg.Any<QueryDefinition>(), Arg.Any<string>(), Arg.Any<QueryRequestOptions>())
+            .Returns(iterator);
+        var repository = new QuizStorageRepository(cosmos, Microsoft.Extensions.Options.Options.Create(new CosmosDbOptions
+        { DatabaseId = "test", TimedTasksContainerId = "quizzes" }), NullLogger<QuizStorageRepository>.Instance);
+
+        var result = await repository.ExecuteAsync("storage_list", JsonSerializer.SerializeToElement(new
+        {
+            dataset = "book_quizzes",
+            select = "VALUE COUNT(1)",
+            predicate = "c.correctOptionId = 0",
+            limit = 1,
+        }), new(-1, StorageTools.AdministratorUserId, 1, "count"), 0, default);
+
+        if (unfinished)
+        {
+            Assert.Equal("budget_exceeded", result.Code);
+            Assert.Null(result.Data);
+        }
+        else
+        {
+            Assert.Equal("ok", result.Status);
+            Assert.Equal(5, JsonSerializer.SerializeToElement(result.Data).GetProperty("value").GetInt32());
+        }
+        await iterator.Received(unfinished ? 2 : 1).ReadNextAsync(Arg.Any<CancellationToken>());
+        container.Received(1).GetItemQueryIterator<JsonElement>(Arg.Any<QueryDefinition>(), Arg.Any<string>(),
+            Arg.Is<QueryRequestOptions>(options => options.PartitionKey == new PartitionKey(-1) && options.EnableScanInQuery == false));
+    }
 
     [Fact]
     public async Task DispatcherRejectsUnauthorizedAndExtraArgumentsBeforeDal()
@@ -78,7 +172,7 @@ public class StorageToolsTests
         Assert.Contains("invalid_query", tool.GetProperty("content").GetString());
         var assistant = messages.EnumerateArray().Single(message => message.GetProperty("role").GetString() == "assistant");
         Assert.Equal("bad", assistant.GetProperty("tool_calls")[0].GetProperty("id").GetString());
-        Assert.Equal(7, second.RootElement.GetProperty("tools").GetArrayLength());
+        Assert.Equal(8, second.RootElement.GetProperty("tools").GetArrayLength());
         Assert.False(second.RootElement.GetProperty("parallel_tool_calls").GetBoolean());
     }
 
@@ -110,7 +204,8 @@ public class StorageToolsTests
         var settings = TestAzureSettings.Create();
         var client = settings.CreateChatCompletionClient(settings.ChatDeployment, http, new StorageTools(repository));
         var result = await client.CompleteAsync(settings.Chat.CreateRequest([ChatMessage.FromUser("list")], settings.ChatDeployment)
-            with { StorageContext = new(-1, StorageTools.AdministratorUserId, 1, "list"), InputTokenLimit = 2000 });
+            with
+        { StorageContext = new(-1, StorageTools.AdministratorUserId, 1, "list"), InputTokenLimit = 2000 });
         Assert.Equal("tool_budget_exceeded", result.ErrorType);
         Assert.Single(handler.Requests);
         await repository.Received(1).ExecuteAsync("storage_list", Arg.Any<JsonElement>(), Arg.Any<StorageContext>(), 0,
@@ -135,6 +230,30 @@ public class StorageToolsTests
         await repository.Received(1).ExecuteAsync("storage_create", Arg.Any<JsonElement>(), Arg.Any<StorageContext>(), 1,
             Arg.Any<CancellationToken>());
         Assert.Contains("Further writes are blocked", handler.Requests[2]);
+    }
+
+    [Fact]
+    public async Task ShuffleIsAMutationAndItsConflictBlocksFurtherWrites()
+    {
+        var repository = Substitute.For<IQuizStorage>();
+        repository.ExecuteAsync(Arg.Any<string>(), Arg.Any<JsonElement>(), Arg.Any<StorageContext>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(new StorageResult("error", "conflict", "Concurrent delivery."));
+        using var handler = new SequenceHandler(
+            ToolResponse("shuffle", "storage_shuffle_options", """{"dataset":"book_quizzes","limit":5}"""),
+            ToolResponse("create", "storage_create", """{"dataset":"quiz_questions","records":[]}"""),
+            TextResponse("Unable to shuffle during delivery."));
+        using var http = new HttpClient(handler);
+        var settings = TestAzureSettings.Create();
+        var client = settings.CreateChatCompletionClient(settings.ChatDeployment, http, new StorageTools(repository));
+
+        await client.CompleteAsync(settings.Chat.CreateRequest([ChatMessage.FromUser("Shuffle Linux options")], settings.ChatDeployment)
+            with
+        { StorageContext = new(-1, StorageTools.AdministratorUserId, 1, "Shuffle Linux options") });
+
+        await repository.Received(1).ExecuteAsync("storage_shuffle_options", Arg.Any<JsonElement>(), Arg.Any<StorageContext>(), 1,
+            Arg.Any<CancellationToken>());
+        await repository.DidNotReceive().ExecuteAsync("storage_create", Arg.Any<JsonElement>(), Arg.Any<StorageContext>(), Arg.Any<int>(),
+            Arg.Any<CancellationToken>());
     }
 
     private static string ToolResponse(string id, string name, string arguments) => JsonSerializer.Serialize(new
