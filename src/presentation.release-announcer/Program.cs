@@ -1,7 +1,6 @@
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using OpenAI.Managers;
 using System.Net.Http.Headers;
 using Telegram.Bot;
 using Ungerfall.ChatGpt.TelegramBot;
@@ -34,7 +33,7 @@ try
     github.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
     github.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Required("GITHUB_TOKEN"));
     var azure = AzureOpenAiSettings.FromEnvironment();
-    using var summary = new SummaryOpenAiClient(new OpenAIService(azure.CreateOptions(azure.SummaryDeployment)),
+    using var summary = new SummaryOpenAiClient(azure.CreateChatCompletionClient(azure.SummaryDeployment),
         azure.SummaryDeployment, azure.Summary);
     using var telegram = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
     var bot = new TelegramBotClient(Required("TELEGRAM_BOT_TOKEN"), telegram);

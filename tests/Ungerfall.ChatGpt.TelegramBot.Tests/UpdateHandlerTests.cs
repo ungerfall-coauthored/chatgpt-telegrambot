@@ -1,9 +1,4 @@
 using Microsoft.Extensions.Logging;
-using OpenAI.Interfaces;
-using OpenAI.ObjectModels;
-using OpenAI.ObjectModels.RequestModels;
-using OpenAI.ObjectModels.ResponseModels;
-using OpenAI.ObjectModels.SharedModels;
 using Telegram.Bot;
 using Telegram.Bot.Requests;
 using Telegram.Bot.Types;
@@ -23,7 +18,8 @@ public class UpdateHandlerTest
         const long chatId = 123;
         var botClientMock = Substitute.For<ITelegramBotClient>();
         var loggerMock = Substitute.For<ILogger<UpdateHandler>>();
-        var openAiServiceMock = Substitute.For<IOpenAIService>();
+        var chatClientMock = Substitute.For<IChatCompletionClient>();
+        var imageClientMock = Substitute.For<IImageGenerationClient>();
         var messageRepoMock = Substitute.For<ITelegramMessageRepository>();
         var tokenCounterMock = Substitute.For<ITokenCounter>();
         var whitelistMock = Substitute.For<IWhitelist>();
@@ -47,11 +43,11 @@ public class UpdateHandlerTest
             .Returns(saved.Task);
 
         var handler = new UpdateHandler(
-            botClientMock, loggerMock, openAiServiceMock, messageRepoMock, tokenCounterMock,
-            new TooLongDidNotReadToday(messageRepoMock, tokenCounterMock, new SummaryOpenAiClient(openAiServiceMock, "test-summary"),
+            botClientMock, loggerMock, chatClientMock, messageRepoMock, tokenCounterMock,
+            new TooLongDidNotReadToday(messageRepoMock, tokenCounterMock, new SummaryOpenAiClient(chatClientMock, "test-summary"),
                 Substitute.For<ILogger<TooLongDidNotReadToday>>(), botClientMock, whitelistMock, Substitute.For<ITimedTaskExecutionRepository>(), TestAzureSettings.Create()),
             whitelistMock,
-            new GenerateImage(new ImageOpenAiClient(openAiServiceMock), Substitute.For<ILogger<GenerateImage>>(), botClientMock),
+            new GenerateImage(new ImageOpenAiClient(imageClientMock), Substitute.For<ILogger<GenerateImage>>(), botClientMock),
             new TestUsers(), conversationRepoMock,
             new ConversationPolicy(conversationRepoMock, new ConversationPolicyChats(), Substitute.For<ILogger<ConversationPolicy>>(),
                 new DecisionsClient(new HttpClient(), Substitute.For<ILogger<DecisionsClient>>(), new AzureDecisionsSettings())),
@@ -77,7 +73,8 @@ public class UpdateHandlerTest
         const long chatId = 123;
         var botClientMock = Substitute.For<ITelegramBotClient>();
         var loggerMock = Substitute.For<ILogger<UpdateHandler>>();
-        var openAiServiceMock = Substitute.For<IOpenAIService>();
+        var chatClientMock = Substitute.For<IChatCompletionClient>();
+        var imageClientMock = Substitute.For<IImageGenerationClient>();
         var messageRepoMock = Substitute.For<ITelegramMessageRepository>();
         var tokenCounterMock = Substitute.For<ITokenCounter>();
         var whitelistMock = Substitute.For<IWhitelist>();
@@ -111,23 +108,17 @@ public class UpdateHandlerTest
             .Returns(_ => messages.AsEnumerable().Reverse().ToAsyncEnumerable());
         messageRepoMock.Create(Arg.Do<TelegramMessage>(messages.Add), Arg.Any<CancellationToken>())
             .Returns(Task.CompletedTask);
-        openAiServiceMock.ChatCompletion.CreateCompletion(
-                Arg.Any<ChatCompletionCreateRequest>(),
-                Arg.Any<string>(),
-                Arg.Any<CancellationToken>())
-            .Returns(new ChatCompletionCreateResponse
-            {
-                Choices = [new ChatChoiceResponse { Message = ChatMessage.FromAssistant("Assistant reply") }]
-            });
+        chatClientMock.CompleteAsync(Arg.Any<ChatCompletionRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new ChatCompletionResult(true, "Assistant reply", "stop"));
         botClientMock.SendRequest<Message>(Arg.Any<SendMessageRequest>(), Arg.Any<CancellationToken>())
             .Returns(sent);
 
         var handler = new UpdateHandler(
-            botClientMock, loggerMock, openAiServiceMock, messageRepoMock, tokenCounterMock,
-            new TooLongDidNotReadToday(messageRepoMock, tokenCounterMock, new SummaryOpenAiClient(openAiServiceMock, "test-summary"),
+            botClientMock, loggerMock, chatClientMock, messageRepoMock, tokenCounterMock,
+            new TooLongDidNotReadToday(messageRepoMock, tokenCounterMock, new SummaryOpenAiClient(chatClientMock, "test-summary"),
                 Substitute.For<ILogger<TooLongDidNotReadToday>>(), botClientMock, whitelistMock, Substitute.For<ITimedTaskExecutionRepository>(), TestAzureSettings.Create()),
             whitelistMock,
-            new GenerateImage(new ImageOpenAiClient(openAiServiceMock), Substitute.For<ILogger<GenerateImage>>(), botClientMock),
+            new GenerateImage(new ImageOpenAiClient(imageClientMock), Substitute.For<ILogger<GenerateImage>>(), botClientMock),
             new TestUsers(), conversationRepoMock,
             new ConversationPolicy(conversationRepoMock, new ConversationPolicyChats(), Substitute.For<ILogger<ConversationPolicy>>(),
                 new DecisionsClient(new HttpClient(), Substitute.For<ILogger<DecisionsClient>>(), new AzureDecisionsSettings())),
@@ -143,7 +134,7 @@ public class UpdateHandlerTest
         var botMessage = Assert.Single(messages, m => m.MessageId == sent.Id);
         Assert.Equal("chatgpt_ungerfall_bot", botMessage.User);
         Assert.Equal(sent.From.Id, botMessage.UserId);
-        var assistant = Assert.Single(gptMessages, m => m.Role == StaticValues.ChatMessageRoles.Assistant);
+        var assistant = Assert.Single(gptMessages, m => m.Role == "assistant");
         Assert.Equal("Assistant reply", assistant.Content);
     }
 }

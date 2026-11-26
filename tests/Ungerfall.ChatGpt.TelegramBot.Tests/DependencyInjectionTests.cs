@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using Ungerfall.ChatGpt.TelegramBot.Configuration;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Tests;
 public class DependencyInjectionTest
@@ -41,6 +42,8 @@ public class DependencyInjectionTest
         {
             // These services are composed by the one-shot pipeline runner, not the bot host.
             if (type == typeof(GitHubReleaseNotesSource) || type == typeof(ReleaseAnnouncementService))
+                continue;
+            if (type == typeof(ChatCompletionRequest) || type == typeof(ImageOpenAiClient))
                 continue;
 
             // Skip anonymous types

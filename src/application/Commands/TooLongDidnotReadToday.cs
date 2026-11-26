@@ -1,8 +1,5 @@
 ﻿using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Logging;
-using OpenAI.Interfaces;
-using OpenAI.ObjectModels;
-using OpenAI.ObjectModels.RequestModels;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -25,7 +22,7 @@ public class TooLongDidNotReadToday
     private readonly ITelegramMessageRepository _history;
     private readonly ITokenCounter _tokenCounter;
     private readonly ITelegramBotClient _botClient;
-    private readonly IOpenAIService _openAiService;
+    private readonly IChatCompletionClient _chatClient;
     private readonly ILogger<TooLongDidNotReadToday> _logger;
     private readonly IWhitelist _whitelist;
     private readonly ITimedTaskExecutionRepository _cache;
@@ -45,7 +42,7 @@ public class TooLongDidNotReadToday
     {
         _history = history;
         _tokenCounter = tokenCounter;
-        _openAiService = openAiClient.Service;
+        _chatClient = openAiClient.Client;
         _logger = logger;
         _botClient = botClient;
         _whitelist = whitelist;
@@ -67,7 +64,7 @@ public class TooLongDidNotReadToday
             cancellationToken: cancellation);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         using var historyHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        var requests = new List<ChatCompletionCreateRequest>();
+        var requests = new List<ChatCompletionRequest>();
         await foreach (var batch in ChatMessageBuilder.CreateBatches(
             GetHistory(chatId, today, messageThreadId, historyHash, cancellation), _whitelist.GetSummarySystemRoleMessage(chatId), _prompts.Summaries.Tldr,
             _tokenCounter, cancellation, maxTokens: _azureOpenAi.Summary.InputTokens))
@@ -81,8 +78,8 @@ public class TooLongDidNotReadToday
             // Hash the exact prepared messages, including role, instruction and batch boundaries.
             var hash = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
             {
-                version = 2, chatId, day = today, topic = messageThreadId ?? 0,
-                endpoint = _azureOpenAi.Endpoint, apiVersion = _azureOpenAi.ApiVersion,
+                version = 3, chatId, day = today, topic = messageThreadId ?? 0,
+                endpoint = _azureOpenAi.ChatEndpoint,
                 history = Convert.ToHexString(historyHash.GetHashAndReset()),
                 requests = requests.Select(r => new { r.Model, r.Temperature, r.MaxCompletionTokens, messages = r.Messages.Select(m => new { m.Role, m.Content }) }),
             })));
@@ -162,28 +159,25 @@ public class TooLongDidNotReadToday
         }
     }
 
-    private async Task<(string Text, bool Successful)> SendGptRequest(ChatCompletionCreateRequest request, long chatId, CancellationToken cancellation = default)
+    private async Task<(string Text, bool Successful)> SendGptRequest(ChatCompletionRequest request, long chatId, CancellationToken cancellation = default)
     {
-        var completionResult = await _openAiService.ChatCompletion.CreateCompletion(
-            request,
-            request.Model,
-            cancellationToken: cancellation);
+        var completionResult = await _chatClient.CompleteAsync(request, cancellation);
         _logger.LogInformation("TLDR tokens for chat {ChatId}: {@tokens}", chatId,
             new
             {
-                completionResult.Usage?.CompletionTokens,
-                completionResult.Usage?.PromptTokens,
-                completionResult.Usage?.TotalTokens
+                completionResult.CompletionTokens,
+                completionResult.PromptTokens,
+                completionResult.TotalTokens
             });
-        var content = completionResult.Choices?.Count > 0 ? completionResult.Choices[0].Message?.Content : null;
+        var content = completionResult.Content;
         if (completionResult.Successful && !string.IsNullOrWhiteSpace(content)
-            && completionResult.Choices![0].FinishReason != "length")
+            && completionResult.FinishReason != "length")
         {
             return (content, true);
         }
         else
         {
-            _logger.LogError("ChatGPT error: {@error}", new { completionResult.Error?.Type, completionResult.Error?.Message });
+            _logger.LogError("ChatGPT error: {@error}", new { completionResult.ErrorType, completionResult.ErrorMessage });
             return ("ChatGPT request wasn't successful", false);
         }
     }

@@ -1,9 +1,5 @@
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
-using OpenAI.Interfaces;
-using OpenAI.ObjectModels.RequestModels;
-using OpenAI.ObjectModels.ResponseModels;
-using OpenAI.ObjectModels.SharedModels;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
 using Ungerfall.ChatGpt.TelegramBot.AzureFunction;
 using Ungerfall.ChatGpt.TelegramBot.Database;
@@ -16,7 +12,7 @@ public class ShrinkMessageTest
     {
         // Arrange
         var loggerMock = Substitute.For<ILogger<ShrinkMessage>>();
-        var openAiServiceMock = Substitute.For<IOpenAIService>();
+        var chatClientMock = Substitute.For<IChatCompletionClient>();
         var tokenCounterMock = Substitute.For<ITokenCounter>();
         var messageRepoMock = Substitute.For<ITelegramMessageRepository>();
 
@@ -36,23 +32,11 @@ public class ShrinkMessageTest
         tokenCounterMock.Count(oldMessage.Message).Returns(1024);
         tokenCounterMock.Count(Arg.Is<string>(p => !p.Equals(oldMessage.Message))).Returns(10);
 
-        openAiServiceMock.ChatCompletion.CreateCompletion(
-                Arg.Any<ChatCompletionCreateRequest>(),
-                Arg.Any<string>(),
-                Arg.Any<CancellationToken>())
-            .Returns(new ChatCompletionCreateResponse
-            {
-                Choices =
-                [
-                    new ChatChoiceResponse
-                    {
-                        Message = ChatMessage.FromAssistant("Shrunk message")
-                    }
-                ]
-            });
+        chatClientMock.CompleteAsync(Arg.Any<ChatCompletionRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new ChatCompletionResult(true, "Shrunk message", "stop"));
 
         var function = new ShrinkMessage(
-            openAiServiceMock,
+            chatClientMock,
             tokenCounterMock,
             loggerMock,
             messageRepoMock, TestAzureSettings.Create());
@@ -73,7 +57,7 @@ public class ShrinkMessageTest
     {
         // Arrange
         var loggerMock = Substitute.For<ILogger<ShrinkMessage>>();
-        var openAiServiceMock = Substitute.For<IOpenAIService>();
+        var chatClientMock = Substitute.For<IChatCompletionClient>();
         var tokenCounterMock = Substitute.For<ITokenCounter>();
         var messageRepoMock = Substitute.For<ITelegramMessageRepository>();
 
@@ -92,20 +76,13 @@ public class ShrinkMessageTest
         messageRepoMock.TryBeginShrink(oldMessage, Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(true);
         tokenCounterMock.Count(oldMessage.Message).Returns(1024);
 
-        openAiServiceMock.ChatCompletion.CreateCompletion(
-                Arg.Any<ChatCompletionCreateRequest>(),
-                Arg.Any<string>(),
-                Arg.Any<CancellationToken>())
-            .Returns(new ChatCompletionCreateResponse
-            {
-                Error = truncated ? null : new Error(),
-                Choices = truncated
-                    ? [new ChatChoiceResponse { Message = ChatMessage.FromAssistant("Incomplete"), FinishReason = "length" }]
-                    : [],
-            });
+        chatClientMock.CompleteAsync(Arg.Any<ChatCompletionRequest>(), Arg.Any<CancellationToken>())
+            .Returns(truncated
+                ? new ChatCompletionResult(true, "Incomplete", "length")
+                : new ChatCompletionResult(false, null, null, ErrorMessage: "request failed"));
 
         var function = new ShrinkMessage(
-            openAiServiceMock,
+            chatClientMock,
             tokenCounterMock,
             loggerMock,
             messageRepoMock, TestAzureSettings.Create());
@@ -121,7 +98,7 @@ public class ShrinkMessageTest
     {
         // Arrange
         var loggerMock = Substitute.For<ILogger<ShrinkMessage>>();
-        var openAiServiceMock = Substitute.For<IOpenAIService>();
+        var chatClientMock = Substitute.For<IChatCompletionClient>();
         var tokenCounterMock = Substitute.For<ITokenCounter>();
         var messageRepoMock = Substitute.For<ITelegramMessageRepository>();
 
@@ -140,23 +117,11 @@ public class ShrinkMessageTest
         tokenCounterMock.Count(oldMessage.Message).Returns(1024);
         tokenCounterMock.Count(Arg.Is<string>(p => !p.Equals(oldMessage.Message))).Returns(2048);
 
-        openAiServiceMock.ChatCompletion.CreateCompletion(
-                Arg.Any<ChatCompletionCreateRequest>(),
-                Arg.Any<string>(),
-                Arg.Any<CancellationToken>())
-            .Returns(new ChatCompletionCreateResponse
-            {
-                Choices =
-                [
-                    new ChatChoiceResponse
-                    {
-                        Message = ChatMessage.FromAssistant("This is an even longer message than before!")
-                    }
-                ]
-            });
+        chatClientMock.CompleteAsync(Arg.Any<ChatCompletionRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new ChatCompletionResult(true, "This is an even longer message than before!", "stop"));
 
         var function = new ShrinkMessage(
-            openAiServiceMock,
+            chatClientMock,
             tokenCounterMock,
             loggerMock,
             messageRepoMock, TestAzureSettings.Create());

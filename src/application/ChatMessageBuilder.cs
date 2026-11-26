@@ -1,5 +1,3 @@
-﻿using OpenAI.ObjectModels;
-using OpenAI.ObjectModels.RequestModels;
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;

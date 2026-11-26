@@ -1,8 +1,5 @@
 ﻿using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
-using OpenAI.Interfaces;
-using OpenAI.ObjectModels;
-using OpenAI.ObjectModels.RequestModels;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,20 +15,20 @@ namespace Ungerfall.ChatGpt.TelegramBot.AzureFunction;
 public class ShrinkMessage
 {
     private readonly ILogger _logger;
-    private readonly IOpenAIService _openAiService;
+    private readonly IChatCompletionClient _chatClient;
     private readonly ITelegramMessageRepository _messagesRepository;
     private readonly ITokenCounter _tokenCounter;
     private readonly AzureOpenAiSettings _azureOpenAi;
     private readonly PromptCatalog _prompts;
 
     public ShrinkMessage(
-        IOpenAIService openAiService,
+        IChatCompletionClient chatClient,
         ITokenCounter tokenCounter,
         ILogger<ShrinkMessage> logger,
         ITelegramMessageRepository messagesRepository,
         AzureOpenAiSettings azureOpenAi, PromptCatalog? prompts = null)
     {
-        _openAiService = openAiService;
+        _chatClient = chatClient;
         _tokenCounter = tokenCounter;
         _logger = logger;
         _messagesRepository = messagesRepository;
@@ -97,19 +94,18 @@ public class ShrinkMessage
 
     private async Task<string> AskChatGptToShrink(TelegramMessage msg)
     {
-        var completionResult = await _openAiService.ChatCompletion.CreateCompletion(
+        var completionResult = await _chatClient.CompleteAsync(
             _azureOpenAi.Chat.CreateRequest(
                 [
                     ChatMessage.FromSystem(_prompts.Summaries.ShrinkSystem),
                     ChatMessage.FromUser(_prompts.Summaries.ShrinkUserPrefix + msg.Message),
                 ],
-                _azureOpenAi.ChatDeployment, _tokenCounter, msg.User),
-            _azureOpenAi.ChatDeployment);
+                _azureOpenAi.ChatDeployment, _tokenCounter, msg.User));
         _logger.LogInformation("Shrink tokens for chat {ChatId}: {@tokens}", msg.ChatId,
-            new { completionResult.Usage?.PromptTokens, completionResult.Usage?.CompletionTokens, completionResult.Usage?.TotalTokens });
-        var content = completionResult.Choices?.Count > 0 ? completionResult.Choices[0].Message?.Content : null;
+            new { completionResult.PromptTokens, completionResult.CompletionTokens, completionResult.TotalTokens });
+        var content = completionResult.Content;
         return completionResult.Successful && !string.IsNullOrWhiteSpace(content)
-            && completionResult.Choices![0].FinishReason != "length"
+            && completionResult.FinishReason != "length"
             ? content
             : throw new InvalidOperationException("ChatGPT shrink request failed, was truncated, or returned no content");
     }

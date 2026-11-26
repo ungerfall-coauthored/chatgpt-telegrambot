@@ -1,7 +1,4 @@
 ﻿using Microsoft.Extensions.Logging;
-using OpenAI.Interfaces;
-using OpenAI.ObjectModels;
-using OpenAI.ObjectModels.RequestModels;
 using System;
 using System.Linq;
 using System.Text.Json;
@@ -23,7 +20,7 @@ public class UpdateHandler
 
     private readonly ITelegramBotClient _botClient;
     private readonly ILogger<UpdateHandler> _logger;
-    private readonly IOpenAIService _openAiService;
+    private readonly IChatCompletionClient _chatClient;
     private readonly ITelegramMessageRepository _telegramMessagesRepository;
     private readonly ITokenCounter _tokenCounter;
     private readonly TooLongDidNotReadToday _tooLongDidnotReadCommand;
@@ -40,7 +37,7 @@ public class UpdateHandler
     public UpdateHandler(
         ITelegramBotClient botClient,
         ILogger<UpdateHandler> logger,
-        IOpenAIService openAiService,
+        IChatCompletionClient chatClient,
         ITelegramMessageRepository telegramMessagesRepository,
         ITokenCounter tokenCounter,
         TooLongDidNotReadToday tooLongDidnotReadCommand,
@@ -55,7 +52,7 @@ public class UpdateHandler
     {
         _botClient = botClient;
         _logger = logger;
-        _openAiService = openAiService;
+        _chatClient = chatClient;
         _telegramMessagesRepository = telegramMessagesRepository;
         _tokenCounter = tokenCounter;
         _tooLongDidnotReadCommand = tooLongDidnotReadCommand;
@@ -354,27 +351,26 @@ public class UpdateHandler
                 messageThreadId, _azureOpenAi.Chat.InputTokens);
             (gptMessage, tokensCount) = await history.GetForChatGpt(chatId, cancellation);
         }
-        var completionResult = await _openAiService.ChatCompletion.CreateCompletion(
+        var completionResult = await _chatClient.CompleteAsync(
             _azureOpenAi.Chat.CreateRequest(gptMessage, _azureOpenAi.ChatDeployment, _tokenCounter, user,
                 maxCompletionTokens: autonomous ? _azureOpenAi.AutonomousMaxCompletionTokens : null),
-            _azureOpenAi.ChatDeployment,
-            cancellationToken: cancellation);
+            cancellation);
         _logger.LogInformation("Tokens: {@tokens}",
             new
             {
                 MyTokensCounter = tokensCount,
-                completionResult.Usage?.CompletionTokens,
-                completionResult.Usage?.PromptTokens,
-                completionResult.Usage?.TotalTokens
+                completionResult.CompletionTokens,
+                completionResult.PromptTokens,
+                completionResult.TotalTokens
             });
         if (completionResult.Successful)
         {
-            return (completionResult?.Choices[0]?.Message?.Content ?? (silentOnFailure ? string.Empty : "Successful, but no content."), completionResult?.Usage?.TotalTokens);
+            return (completionResult.Content ?? (silentOnFailure ? string.Empty : "Successful, but no content."), completionResult.TotalTokens);
         }
         else
         {
-            _logger.LogError("ChatGPT error: {@error}", new { completionResult.Error?.Type, completionResult.Error?.Message });
-            return (silentOnFailure ? string.Empty : "ChatGPT request wasn't successful", completionResult.Usage?.TotalTokens);
+            _logger.LogError("ChatGPT error: {@error}", new { completionResult.ErrorType, completionResult.ErrorMessage });
+            return (silentOnFailure ? string.Empty : "ChatGPT request wasn't successful", completionResult.TotalTokens);
         }
     }
 

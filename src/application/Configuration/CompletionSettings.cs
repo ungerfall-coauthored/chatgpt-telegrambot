@@ -1,4 +1,3 @@
-using OpenAI.ObjectModels.RequestModels;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -34,7 +33,7 @@ public sealed class CompletionSettings
     public int SafetyMarginTokens { get; }
     public float? Temperature { get; }
 
-    public ChatCompletionCreateRequest CreateRequest(
+    public ChatCompletionRequest CreateRequest(
         IList<ChatMessage> messages, string deployment, ITokenCounter? tokenCounter = null,
         string? user = null, int? maxCompletionTokens = null)
     {
@@ -45,15 +44,7 @@ public sealed class CompletionSettings
         var outputTokens = maxCompletionTokens ?? MaxCompletionTokens;
         if (outputTokens <= 0 || outputTokens > MaxCompletionTokens)
             throw new ArgumentOutOfRangeException(nameof(maxCompletionTokens));
-        var request = new ChatCompletionCreateRequest
-        {
-            Messages = messages,
-            Model = deployment,
-            Temperature = Temperature,
-            MaxCompletionTokens = outputTokens,
-        };
-        if (user != null) request.User = user;
-        return request;
+        return new ChatCompletionRequest(messages.ToArray(), deployment, Temperature, outputTokens, user);
     }
 
     public static CompletionSettings FromEnvironment(bool summary = false) =>

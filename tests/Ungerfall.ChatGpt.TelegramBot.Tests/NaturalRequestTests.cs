@@ -3,10 +3,6 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
-using OpenAI.Interfaces;
-using OpenAI.ObjectModels.RequestModels;
-using OpenAI.ObjectModels.ResponseModels;
-using OpenAI.ObjectModels.SharedModels;
 using Telegram.Bot;
 using Telegram.Bot.Requests;
 using Telegram.Bot.Types;
@@ -130,14 +126,14 @@ internal sealed class NaturalRequestScenario : IDisposable
     public const string BotRequest = "Неплохо, но хотелось бы знать мнение бота";
     private readonly long ChatId;
     private readonly string? _previousPolicy = Environment.GetEnvironmentVariable("ConversationPolicyChats");
-    private readonly IOpenAIService _completion;
+    private readonly IChatCompletionClient _completion;
     public ITelegramBotClient Bot { get; }
     public ConversationState State { get; }
     public ConversationBudget Budget { get; }
     public UpdateHandler Handler { get; }
 
     public NaturalRequestScenario(DecisionsClient decisions, ConversationPolicyOptions? options = null,
-        IOpenAIService? completion = null, AzureOpenAiSettings? azureSettings = null, string? systemPrompt = null,
+        IChatCompletionClient? completion = null, AzureOpenAiSettings? azureSettings = null, string? systemPrompt = null,
         ITelegramBotClient? bot = null, long chatId = 123)
     {
         ChatId = chatId;
@@ -148,7 +144,8 @@ internal sealed class NaturalRequestScenario : IDisposable
             ChatId = ChatId, DateUtc = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             AutonomousCandidates = 3, LastAutonomousUtc = DateTime.UtcNow,
         };
-        _completion = completion ?? Substitute.For<IOpenAIService>();
+        _completion = completion ?? Substitute.For<IChatCompletionClient>();
+        var imageClient = Substitute.For<IImageGenerationClient>();
         options ??= new ConversationPolicyOptions
         {
             DecisionsEnabled = true, NaturalRequestsEnabled = true,
@@ -170,11 +167,8 @@ internal sealed class NaturalRequestScenario : IDisposable
         whitelist.IsGroupAllowedToUseBot(ChatId).Returns(true);
         whitelist.GetSystemRoleMessage(ChatId).Returns(systemPrompt ?? "Answer the user's cooking question.");
         if (completion == null)
-            _completion.ChatCompletion.CreateCompletion(Arg.Any<ChatCompletionCreateRequest>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-                .Returns(new ChatCompletionCreateResponse
-                {
-                    Choices = [new ChatChoiceResponse { Message = ChatMessage.FromAssistant("Из творога можно приготовить ленивые вареники.") }],
-                });
+            _completion.CompleteAsync(Arg.Any<ChatCompletionRequest>(), Arg.Any<CancellationToken>())
+                .Returns(new ChatCompletionResult(true, "Из творога можно приготовить ленивые вареники.", "stop"));
         if (bot == null)
             Bot.SendRequest<Message>(Arg.Any<SendRichMessageRequest>(), Arg.Any<CancellationToken>()).Returns(new Message
             {
@@ -185,7 +179,7 @@ internal sealed class NaturalRequestScenario : IDisposable
         Handler = new UpdateHandler(Bot, NullLogger<UpdateHandler>.Instance, _completion, messages, tokens,
             new TooLongDidNotReadToday(messages, tokens, new SummaryOpenAiClient(_completion, "test-summary"),
                 NullLogger<TooLongDidNotReadToday>.Instance, Bot, whitelist, Substitute.For<ITimedTaskExecutionRepository>(), azure),
-            whitelist, new GenerateImage(new ImageOpenAiClient(_completion), NullLogger<GenerateImage>.Instance, Bot),
+            whitelist, new GenerateImage(new ImageOpenAiClient(imageClient), NullLogger<GenerateImage>.Instance, Bot),
             new TestUsers(), repository,
             new ConversationPolicy(repository, new ConversationPolicyChats(), NullLogger<ConversationPolicy>.Instance, decisions),
             new PersonalSettings(Bot, NullLogger<PersonalSettings>.Instance, azure), azure);
@@ -216,10 +210,10 @@ internal sealed class NaturalRequestScenario : IDisposable
         await Bot.Received(1).SendRequest<Message>(
             Arg.Is<SendRichMessageRequest>(request => request.ReplyParameters != null && request.ReplyParameters.MessageId == 3),
             Arg.Any<CancellationToken>());
-        await _completion.ChatCompletion.Received(1).CreateCompletion(
-            Arg.Is<ChatCompletionCreateRequest>(request => request.Messages.Any(message =>
+        await _completion.Received(1).CompleteAsync(
+            Arg.Is<ChatCompletionRequest>(request => request.Messages.Any(message =>
                 message.Content != null && message.Content.Contains(FoodQuestion))),
-            Arg.Any<string>(), Arg.Any<CancellationToken>());
+            Arg.Any<CancellationToken>());
     }
 
     public Task AssertSentOneReply() =>

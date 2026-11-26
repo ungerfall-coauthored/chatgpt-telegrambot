@@ -38,10 +38,11 @@ budget and alerts. Alerts are not a hard spending cap.
 | `AZURE_OPENAI_CHAT_DEPLOYMENT` | Required chat deployment name |
 | `AZURE_OPENAI_SUMMARY_DEPLOYMENT` | Optional summary deployment; defaults to chat |
 | `AZURE_OPENAI_IMAGE_DEPLOYMENT` | Optional image deployment; without it `/image` reports disabled |
-| `AZURE_OPENAI_API_VERSION` | Optional; defaults to `2024-10-21` |
 | `AZURE_OPENAI_IMAGE_API_VERSION` | Optional; defaults to `2025-04-01-preview` |
 
-Use models compatible with the request parameters and the chosen API versions.
+Chat completions use Azure's `/openai/v1/` endpoint and do not require an API
+version setting. Image generation retains its versioned Azure deployment
+endpoint. Use models compatible with the request settings and image API version.
 See the request settings below before switching model families. Optional
 no-mention replies use a separate **Microsoft-Decision-1.1** deployment in
 Foundry, described below. They do not call the public OpenAI API.
@@ -68,11 +69,12 @@ settings, even if the deployments share a Foundry resource.
 
 Set all three, or leave all three unset to disable the integration. Partial
 configuration fails validation. Remove the obsolete `DECISIONS_API_KEY`; it
-is no longer read. Existing `AZURE_OPENAI_*` settings remain unchanged.
+is no longer read. The chat `AZURE_OPENAI_API_VERSION` setting is no longer
+read; image API version configuration remains unchanged.
 
 The client uses `POST /providers/microsoft/v1/systemone`, named `noul`
 questions, and `answers.<question>.noul` probabilities. It does not use
-`/openai/v1/decisions`, Chat Completions, or `AZURE_OPENAI_API_VERSION`.
+`/openai/v1/decisions` or Chat Completions.
 See [Microsoft's model/API guide](https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision).
 
 For local Functions, add the following inside **`Values`** in the existing,

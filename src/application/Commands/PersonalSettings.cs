@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Logging;
-using OpenAI.ObjectModels;
 using System;
 using System.Linq;
 using System.Threading;

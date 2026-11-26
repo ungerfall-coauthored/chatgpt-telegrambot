@@ -1,6 +1,4 @@
 ﻿using Microsoft.Extensions.Logging;
-using OpenAI.Interfaces;
-using OpenAI.ObjectModels.RequestModels;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -20,7 +18,7 @@ public class DailySummary : TimedTask
     private readonly DailySummaryChats _chats;
     private readonly IWhitelist _whitelist;
     private readonly ITelegramMessageRepository _messages;
-    private readonly IOpenAIService _openAiService;
+    private readonly IChatCompletionClient _chatClient;
     private readonly ILogger<DailySummary> _logger;
     private readonly string _model;
     private readonly CompletionSettings _settings;
@@ -38,7 +36,7 @@ public class DailySummary : TimedTask
         _chats = chats;
         _whitelist = whitelist;
         _messages = messages;
-        _openAiService = openAiClient.Service;
+        _chatClient = openAiClient.Client;
         _model = openAiClient.Deployment;
         _settings = openAiClient.Settings;
         _logger = logger;
@@ -70,7 +68,7 @@ public class DailySummary : TimedTask
             cancellationToken: default);
     }
 
-    private async IAsyncEnumerable<ChatCompletionCreateRequest> CreateGptRequestBatches(
+    private async IAsyncEnumerable<ChatCompletionRequest> CreateGptRequestBatches(
         long chatId,
         [EnumeratorCancellation] CancellationToken cancellation = default)
     {
@@ -103,7 +101,7 @@ public class DailySummary : TimedTask
     }
 
     private async Task<string> SendGptRequestWithLimit(
-        ChatCompletionCreateRequest request,
+        ChatCompletionRequest request,
         long chatId,
         SemaphoreSlim concurrencyLimit,
         CancellationToken cancellation)
@@ -119,15 +117,13 @@ public class DailySummary : TimedTask
         }
     }
 
-    private async Task<string> SendGptRequest(ChatCompletionCreateRequest request, long chatId, CancellationToken cancellation = default)
+    private async Task<string> SendGptRequest(ChatCompletionRequest request, long chatId, CancellationToken cancellation = default)
     {
-        var completionResult = await _openAiService.ChatCompletion
-            .CreateCompletion(request, _model, cancellationToken: cancellation);
+        var completionResult = await _chatClient.CompleteAsync(request, cancellation);
         _logger.LogInformation("Daily summary tokens for chat {ChatId}: {@tokens}", chatId,
-            new { completionResult.Usage?.PromptTokens, completionResult.Usage?.CompletionTokens, completionResult.Usage?.TotalTokens });
-        return completionResult.Successful && completionResult.Choices?.Count > 0
-            && completionResult.Choices[0].FinishReason != "length"
-            ? completionResult?.Choices[0]?.Message?.Content ?? "Successful, but no content."
-            : throw new ApplicationException(completionResult?.Error?.Message ?? "Summary request failed, was truncated, or returned no choices.");
+            new { completionResult.PromptTokens, completionResult.CompletionTokens, completionResult.TotalTokens });
+        return completionResult.Successful && completionResult.FinishReason != "length"
+            ? completionResult.Content ?? "Successful, but no content."
+            : throw new ApplicationException(completionResult.ErrorMessage ?? "Summary request failed, was truncated, or returned no content.");
     }
 }

@@ -1,6 +1,4 @@
 ﻿using Microsoft.Extensions.Logging;
-using OpenAI.Interfaces;
-using OpenAI.ObjectModels;
 using System;
 using System.IO;
 using System.Threading;
@@ -14,7 +12,7 @@ using Ungerfall.ChatGpt.TelegramBot.Configuration;
 namespace Ungerfall.ChatGpt.TelegramBot.Commands;
 public class GenerateImage
 {
-    private readonly IOpenAIService? _openAiService;
+    private readonly IImageGenerationClient? _imageClient;
     private readonly ITelegramBotClient _botClient;
     private readonly ILogger<GenerateImage> _logger;
 
@@ -23,7 +21,7 @@ public class GenerateImage
         ILogger<GenerateImage> logger,
         ITelegramBotClient botClient)
     {
-        _openAiService = openAiClient.Service;
+        _imageClient = openAiClient.Client;
         _logger = logger;
         _botClient = botClient;
     }
@@ -44,7 +42,7 @@ public class GenerateImage
                 cancellationToken: cancellation);
         }
 
-        if (_openAiService == null)
+        if (_imageClient == null)
         {
             if (beforeSend != null) await beforeSend();
             return await _botClient.SendResponse(
@@ -58,17 +56,10 @@ public class GenerateImage
             chatId: message.Chat.Id,
             ChatAction.UploadPhoto,
             cancellationToken: cancellation);
-        var image = await _openAiService.Image.CreateImage(
-            new OpenAI.ObjectModels.RequestModels.ImageCreateRequest
-            {
-                Prompt = msgWithoutCommand,
-                Size = StaticValues.ImageStatics.Size.Size1024,
-                N = 1,
-            },
-            cancellation);
-        if (image.Successful && image.Results?.Count > 0 && !string.IsNullOrWhiteSpace(image.Results[0].B64))
+        var image = await _imageClient.GenerateAsync(msgWithoutCommand, cancellation);
+        if (image.Successful && !string.IsNullOrWhiteSpace(image.Base64))
         {
-            using var stream = new MemoryStream(Convert.FromBase64String(image.Results[0].B64));
+            using var stream = new MemoryStream(Convert.FromBase64String(image.Base64));
             if (beforeSend != null) await beforeSend();
             try
             {
@@ -90,11 +81,11 @@ public class GenerateImage
         }
         else
         {
-            _logger.LogError("ChatGPT error: {@error}", new { image.Error?.Type, image.Error?.Message });
+            _logger.LogError("ChatGPT image error: {Error}", image.ErrorMessage);
             if (beforeSend != null) await beforeSend();
             return await _botClient.SendResponse(
                 chatId: message.Chat.Id,
-                text: "ChatGPT request wasn't successful." + (image.Error?.Message ?? string.Empty),
+                text: "ChatGPT request wasn't successful." + (image.ErrorMessage ?? string.Empty),
                 replyParameters: message.Id,
                 cancellationToken: cancellation);
         }
