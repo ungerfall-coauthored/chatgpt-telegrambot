@@ -26,7 +26,13 @@ public class ConfiguredSummaryLiveTests
             azure.SummaryDeployment, azure.Summary);
         var history = Substitute.For<ITelegramMessageRepository>();
         history.Get(-1, Arg.Any<DateOnly>(), Arg.Any<CancellationToken>()).Returns(
-            new[] { new TelegramMessage { User = "Friend", Message = "Мы договорились встретиться завтра.", Date = DateTime.UtcNow } }.ToAsyncEnumerable());
+            new[]
+            {
+                new TelegramMessage { User = "Friend", Message = "Мы договорились встретиться завтра.", Date = DateTime.UtcNow, MessageId = 1 },
+                new TelegramMessage { User = "Friend", Message = "[activity] sent an image", Date = DateTime.UtcNow.AddSeconds(-2), MessageId = 2 },
+                new TelegramMessage { User = "Friend", Message = "[activity] sent an image", Date = DateTime.UtcNow.AddSeconds(-1), MessageId = 3 },
+                new TelegramMessage { User = "Friend", Message = "[activity] requested image generation: a red circle", Date = DateTime.UtcNow.AddSeconds(1), MessageId = 4 },
+            }.ToAsyncEnumerable());
         var whitelist = Substitute.For<IWhitelist>();
         whitelist.GetSummarySystemRoleMessage(-1).Returns(PromptCatalog.Load().Summaries.DefaultSystem);
         var bot = Substitute.For<ITelegramBotClient>();

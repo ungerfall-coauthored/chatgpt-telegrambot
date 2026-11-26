@@ -16,6 +16,7 @@ namespace Ungerfall.ChatGpt.TelegramBot;
 
 public class UpdateHandler
 {
+    private const string ActivityHistoryPrefix = "[activity] ";
     private readonly string BotUsername = "@" + (Environment.GetEnvironmentVariable("TELEGRAM_BOT_USERNAME") ?? "chatgpt_ungerfall_bot").TrimStart('@');
 
     private readonly ITelegramBotClient _botClient;
@@ -114,12 +115,18 @@ public class UpdateHandler
             return;
         }
         _logger.LogInformation("Receive message {@message}", new { message.Text, message.Type, message.Chat.Id });
-        if (string.IsNullOrWhiteSpace(message.Text) || message.From?.IsBot == true || IsBot(message.From))
+        if (message.From?.IsBot == true || IsBot(message.From))
             return;
-        var messageText = message.Text;
 
         bool allowed = _whitelist.IsGroupAllowedToUseBot(message.Chat.Id)
             || _testUsers.Get().Contains(message.Chat.Id);
+        if (string.IsNullOrWhiteSpace(message.Text))
+        {
+            if (!allowed || message.From == null) return;
+            await SaveToHistory(message.Chat.Id, message.From.Id, DescribeNonTextMessage(message), message.Id,
+                message.Date, message.From.FirstName ?? message.From.Username ?? "unknown", cancellation, message.MessageThreadId);
+            return;
+        }
         if (!allowed)
         {
             await _botClient.SendMessage(
@@ -135,6 +142,8 @@ public class UpdateHandler
             return;
         }
 
+        var messageText = message.Text;
+        var user = message.From?.FirstName ?? message.From?.Username ?? "unknown";
         var receipt = await _conversations.Begin(message.Chat.Id, message.Id, cancellation);
         if (receipt == null) return;
         try
@@ -166,6 +175,11 @@ public class UpdateHandler
             }
 
             string msgWithoutCommand = messageText[commandEndIndex..];
+            var activity = DescribeCommandActivity(command, msgWithoutCommand);
+            if (activity != null)
+                await SaveToHistory(message.Chat.Id, message.From?.Id ?? 0, activity, message.Id, message.Date,
+                    user, cancellation, message.MessageThreadId);
+
             var action = command switch
             {
                 "/image" => _imageCommand.Execute(message, msgWithoutCommand, cancellation, BeforeSend),
@@ -208,6 +222,43 @@ public class UpdateHandler
             throw;
         }
     }
+
+    private static string DescribeNonTextMessage(Message message)
+    {
+        var activity = message.Type switch
+        {
+            MessageType.Photo => "sent an image",
+            MessageType.Audio => "sent audio/music",
+            MessageType.Voice => "sent a voice message",
+            MessageType.Video => "sent a video",
+            MessageType.VideoNote => "sent a video note",
+            MessageType.Animation => "sent an animation",
+            MessageType.Document => "sent a file",
+            MessageType.Sticker => "sent a sticker",
+            MessageType.Contact => "shared a contact",
+            MessageType.Location => "shared a location",
+            MessageType.Venue => "shared a place",
+            MessageType.Poll => "created a poll",
+            MessageType.Dice => "sent a dice roll",
+            MessageType.Game => "shared a game",
+            MessageType.Text => "sent an empty message",
+            _ => "sent a non-text message",
+        };
+        var caption = string.IsNullOrWhiteSpace(message.Caption) ? string.Empty : $"; caption: {message.Caption}";
+        return $"{ActivityHistoryPrefix}{activity}{caption}";
+    }
+
+    private static string? DescribeCommandActivity(string command, string commandText) => command switch
+    {
+        "/image" => string.IsNullOrWhiteSpace(commandText)
+            ? $"{ActivityHistoryPrefix}requested an image"
+            : $"{ActivityHistoryPrefix}requested image generation: {commandText.Trim()}",
+        "/settings" => $"{ActivityHistoryPrefix}opened bot settings",
+        "/systemprompt" => $"{ActivityHistoryPrefix}requested the bot's system prompt",
+        "/docking" => $"{ActivityHistoryPrefix}started the docking game",
+        "/tldrtoday" => $"{ActivityHistoryPrefix}requested a TL;DR of today's chat",
+        _ => null,
+    };
 
     private async Task SendSystemPrompt(Message message, Func<Task> beforeSend, CancellationToken cancellation)
     {
