@@ -223,7 +223,8 @@ public class StorageToolsLiveTests(Xunit.Abstractions.ITestOutputHelper output)
             { StorageContext = fixture.Context(3, deleteRequest) }, fixture.Token);
         Assert.True(deleted.Successful, $"{deleted.ErrorType}: {deleted.ErrorMessage}; "
             + string.Join(", ", recording.Operations.Zip(recording.Results, (operation, result) => $"{operation}:{result.Status}:{result.Code}:{result.Message}")));
-        Assert.Contains("storage_delete", recording.Operations);
+        Assert.True(recording.Operations.Contains("storage_delete"), "No delete; reply: " + deleted.Content
+            + "; arguments: " + string.Join("; ", recording.Arguments.Select(arguments => arguments.GetRawText())));
         Assert.Equal("not_found", (await fixture.Repository.ExecuteAsync("storage_get",
             JsonSerializer.SerializeToElement(new { id }), fixture.Context(3, "verify"), 0, fixture.Token)).Code);
     }

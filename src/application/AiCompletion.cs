@@ -82,7 +82,7 @@ public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? 
             + "Use controlled Cosmos SQL SELECT, WHERE and ORDER BY clauses, not full queries or KQL. "
             + "Prefer scalar VALUE COUNT(1) for counts and VALUE true with limit 1 for existence; do not list full records to count them. "
             + "Use small projections for discovery and fetch full records only when editing them. Answer position 1 is correctOptionId 0. "
-            + "Linux book quizzes are in book_quizzes. When the user asks to check or reshuffle the Linux quiz, last N quizzes means the last N delivered book quizzes; "
+            + "The Linux book quiz series is in book_quizzes and its IDs start with book-quiz:; other quiz IDs, including tool-quiz:, and quizzes merely about Linux topics are in quiz_questions. When the user asks to check or reshuffle the Linux quiz, last N quizzes means the last N delivered book quizzes; "
             + "do not inspect quiz_questions for it. To check them, read book_quiz_progress.nextSequence "
             + "and count the sequence range max(1,nextSequence-N) through nextSequence-1 with one VALUE COUNT(1) query; do not list those rows or count all-time or upcoming quizzes. "
             + "An explicit request to reshuffle the Linux quiz means shuffle answer options of upcoming book questions, "
