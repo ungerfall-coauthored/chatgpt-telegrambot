@@ -122,6 +122,8 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
         truncated |= iterator.HasMoreResults;
         if (query.Aggregate && (truncated || records.Count != 1))
             return new("error", "budget_exceeded", "COUNT did not complete within the read budget. Narrow the predicate; no approximate count is returned.");
+        if (query.Exists && records.Count == 0 && truncated)
+            return new("error", "budget_exceeded", "Existence check did not complete within the read budget. Narrow the predicate; no negative result is returned.");
         if (query.Scalar)
         {
             var scalarResult = new StorageResult("ok", Data: new

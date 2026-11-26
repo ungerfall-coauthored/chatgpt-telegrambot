@@ -109,7 +109,8 @@ The server permits documented fields/operators only, reads at
 most two pages and 10 records, limits result data to 12 KB, and stops after
 observing more than 50 RU. RU is measured after a page returns: this is not a
 hard Azure spending cap. Counts ignore the row limit but still obey time/page/RU
-budgets; an incomplete count fails instead of returning a partial number.
+budgets; an incomplete count fails instead of returning a partial number, and an
+incomplete existence check without a matching row fails instead of returning false.
 There are no joins, subqueries, internal-field access or unrestricted pagination.
 `storage_get`, `storage_create`, `storage_update`, and `storage_delete`
 operate through the same DAL. Creates validate 1-5 questions per call;

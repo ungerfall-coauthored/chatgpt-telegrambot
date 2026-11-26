@@ -111,7 +111,7 @@ public sealed record QuizStorageQuery(QueryDefinition Definition, string Dataset
         {
             if (token.Value == "(") depth++;
             if (token.Value == ")" && --depth < 0) throw new ArgumentException("Unbalanced predicate parentheses.");
-            if (char.IsLetter(token.Value[0]) && !allowed.Contains(token.Value) && !operators.Contains(token.Value))
+            if ((char.IsLetter(token.Value[0]) || token.Value[0] == '_') && !allowed.Contains(token.Value) && !operators.Contains(token.Value))
                 throw new ArgumentException("Unknown field or operator. Use the dataset's storage_schema.");
         }
         if (depth != 0) throw new ArgumentException("Unbalanced predicate parentheses.");

@@ -58,6 +58,7 @@ public class StorageToolsTests
     [InlineData("VALUE COUNT(1)", "", "c.sequence DESC")]
     [InlineData("VALUE c.id AS\talias", "", "")]
     [InlineData("c.id", "true) OR true --", "")]
+    [InlineData("c.id", "_rid != ''", "")]
     [InlineData("c.id", "c.nextSequence = 1", "")]
     [InlineData("c.id", "", "c.sequence DESC OFFSET 0 LIMIT 1000")]
     public void SelectControlsRejectInternalFieldsScopeEscapesAndUnboundedQueries(string select, string predicate, string orderBy) =>
@@ -69,6 +70,46 @@ public class StorageToolsTests
             orderBy,
             limit = 5,
         })));
+
+    [Theory]
+    [InlineData(false, true, "budget_exceeded", null)]
+    [InlineData(false, false, "ok", false)]
+    [InlineData(true, true, "ok", true)]
+    public async Task ExistsNeverReturnsUnprovenNegativeResult(bool found, bool unfinished, string expected, bool? value)
+    {
+        var container = Substitute.For<Container>();
+        var cosmos = Substitute.For<CosmosClient>();
+        cosmos.GetContainer("test", "quizzes").Returns(container);
+        var iterator = Substitute.For<FeedIterator<JsonElement>>();
+        var response = Substitute.For<FeedResponse<JsonElement>>();
+        response.RequestCharge.Returns(1);
+        response.GetEnumerator().Returns(_ => (found ? new[] { JsonSerializer.SerializeToElement(true) } : Array.Empty<JsonElement>())
+            .AsEnumerable().GetEnumerator());
+        var more = true;
+        iterator.HasMoreResults.Returns(_ => more);
+        iterator.ReadNextAsync(Arg.Any<CancellationToken>()).Returns(_ =>
+        {
+            more = unfinished;
+            return Task.FromResult(response);
+        });
+        container.GetItemQueryIterator<JsonElement>(Arg.Any<QueryDefinition>(), Arg.Any<string>(), Arg.Any<QueryRequestOptions>())
+            .Returns(iterator);
+        var repository = new QuizStorageRepository(cosmos, Microsoft.Extensions.Options.Options.Create(new CosmosDbOptions
+        { DatabaseId = "test", TimedTasksContainerId = "quizzes" }), NullLogger<QuizStorageRepository>.Instance);
+
+        var result = await repository.ExecuteAsync("storage_list", JsonSerializer.SerializeToElement(new
+        {
+            dataset = "book_quizzes",
+            select = "VALUE true",
+            predicate = "c.correctOptionId = 0",
+            limit = 1,
+        }), new(-1, StorageTools.AdministratorUserId, 1, "exists"), 0, default);
+
+        Assert.Equal(expected, expected == "ok" ? result.Status : result.Code);
+        if (value is null) Assert.Null(result.Data);
+        else Assert.Equal(value, JsonSerializer.SerializeToElement(result.Data).GetProperty("value").GetBoolean());
+        await iterator.Received(found || !unfinished ? 1 : 2).ReadNextAsync(Arg.Any<CancellationToken>());
+    }
 
     [Theory]
     [InlineData(false)]
