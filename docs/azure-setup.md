@@ -85,18 +85,53 @@ image generation, or message shrinking.
 `quiz_questions` dataset. It maps to the existing
 `CosmosTimedTasksContainer` through the DAL, with the current Telegram chat
 as the server-selected `/chatId` partition. No new container or credentials
-are needed. Ordinary CS, film, and video-game quizzes are supported; book
-quizzes, chat history, receipts, and deployment data are not editable.
+are needed. Ordinary CS, film, and video-game quizzes support CRUD. `book_quizzes` exposes
+the Linux Programming Interface series for querying and updating upcoming
+questions. `book_quiz_progress` exposes delivery progress read-only; it is not
+an editable dataset. Chat history, receipts, and deployment data remain outside
+these tools.
 
-`storage_list` accepts a bounded Cosmos SQL **WHERE predicate**, not KQL or
-arbitrary SQL. The server permits documented fields/operators only, reads at
+`storage_list` accepts controlled Cosmos SQL **SELECT**, **WHERE** and
+**ORDER BY** clauses (`select`, `predicate`, `orderBy`), not KQL or a full query.
+The server owns `FROM`, dataset filters and the chat partition. Use
+`select: "VALUE COUNT(1)"` for scalar counts, `select: "VALUE true"` with
+`limit: 1` for existence, and small projections such as
+`"c.id, c.correctOptionId"` for discovery. `VALUE` field/object projections,
+field aliases and a SELECT-only `c.version` token are supported.
+`select: "*"` (or legacy omitted/null select) returns full editable views.
+Scalar counts/exists use `data.value`; regular projections use `data.records`.
+Other `VALUE` projections use an array in `data.value`.
+
+Ordering accepts documented fields with ASC/DESC; multi-field ordering may
+require a Cosmos composite index. Book delivery order is `c.sequence`;
+ordinary `c._ts` is last modification time, not a separate delivery timestamp.
+The server permits documented fields/operators only, reads at
 most two pages and 10 records, limits result data to 12 KB, and stops after
 observing more than 50 RU. RU is measured after a page returns: this is not a
-hard Azure spending cap. There is no unrestricted pagination.
+hard Azure spending cap. Counts ignore the row limit but still obey time/page/RU
+budgets; an incomplete count fails instead of returning a partial number, and an
+incomplete existence check without a matching row fails instead of returning false.
+There are no joins, subqueries, internal-field access or unrestricted pagination.
 `storage_get`, `storage_create`, `storage_update`, and `storage_delete`
 operate through the same DAL. Creates validate 1-5 questions per call;
 updates/deletes require the current version and reject posted quizzes or
 quizzes reserved for scheduled delivery.
+Book updates preserve citation/sequence/image metadata and reject sequences
+below progress `nextSequence` or any series with `sending=true`. The mutation
+guards the progress ETag in the same transaction, so a concurrent sender cannot
+send stale answer options. Book creation/deletion still uses ordered ingestion
+rather than tools that could create gaps in the series.
+
+To check the last N delivered book questions, read progress and count sequences
+`max(1,nextSequence-N)` through `nextSequence-1`. Answer position 1 is the
+zero-based `correctOptionId = 0`. `storage_shuffle_options` then reshuffles only
+upcoming questions' answer options in batches of up to five. It preserves the
+correct answer text, changes its position, and leaves question text/order and
+citations unchanged. Responses contain only counts, IDs and `hasMore`; repeat
+while `hasMore=true`. Per-request markers prevent processing the same question
+twice across batches, and atomic receipts make retries safe. A later conflict
+can leave earlier successful batches committed; the model must report those
+and stop rather than claim all questions were changed.
 Mutations and durable retry receipts commit atomically in the same partition.
 The scheduler takes a per-chat, per-quiz-type delivery lock and reserves a quiz
 using its Cosmos ETag before sending its poll. Completion atomically marks it

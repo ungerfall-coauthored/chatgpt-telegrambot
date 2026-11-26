@@ -8,7 +8,6 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Ungerfall.ChatGpt.TelegramBot.Database;
@@ -32,15 +31,21 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
         try
         {
             if (operation == "storage_list") return await List(arguments, context.ChatId, timeout.Token);
+            var dataset = arguments.TryGetProperty("dataset", out var name) ? name.GetString()! : "quiz_questions";
+            _ = QuizStorageQuery.Fields(dataset);
             if (operation == "storage_get")
             {
-                var response = await Read(arguments.GetProperty("id").GetString()!, context.ChatId, timeout.Token);
-                var view = View(response.Resource, response.ETag);
+                var response = await Read(arguments.GetProperty("id").GetString()!, context.ChatId, dataset, timeout.Token);
+                var progress = dataset == "book_quizzes" ? await ReadProgress(context.ChatId, timeout.Token) : null;
+                var view = View(response.Resource, response.ETag, progress);
                 return Encoding.UTF8.GetByteCount(new StorageResult("ok", Data: view).ToJson()) > 12000
                     ? new("error", "budget_exceeded", "Quiz exceeds the 12000-byte tool result limit.")
                     : new("ok", Data: view);
             }
-            return await Mutate(operation, arguments, context, mutationIndex, () => writeStarted = true, timeout.Token);
+            if (dataset == "book_quiz_progress" || dataset == "book_quizzes" && operation is not ("storage_update" or "storage_shuffle_options")
+                || operation == "storage_shuffle_options" && dataset != "book_quizzes")
+                return new("error", "forbidden", "Progress is read-only; book quizzes support only guarded updates.");
+            return await Mutate(operation, arguments, context, dataset, mutationIndex, () => writeStarted = true, timeout.Token);
         }
         catch (CosmosException ex)
         {
@@ -55,7 +60,7 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
             logger.LogWarning("Storage operation {Operation} failed: HTTP {Status}, activity {ActivityId}",
                 operation, (int)ex.StatusCode, ex.ActivityId);
             return new("error", code, code == "invalid_query"
-                ? "Invalid Cosmos SQL predicate. Check field names, operators, quoting and parentheses using storage_schema."
+                ? "Invalid Cosmos SQL query. Check SELECT, WHERE and ORDER BY using storage_schema."
                 : "Storage operation did not complete successfully. For a conflict, read the current record before retrying.");
         }
         catch (Exception ex) when (!writeStarted && ex is (ArgumentException or JsonException or InvalidOperationException
@@ -79,25 +84,20 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
 
     private async Task<StorageResult> List(JsonElement arguments, long chatId, CancellationToken cancellation)
     {
-        var predicate = arguments.GetProperty("predicate").GetString()!;
-        ValidatePredicate(predicate);
-        var limit = arguments.GetProperty("limit").GetInt32();
-        if (limit is < 1 or > 10) throw new ArgumentException("Limit must be between 1 and 10.");
-        var query = new QueryDefinition($"SELECT TOP {limit + 1} * FROM c WHERE c.type IN (@cs, @films, @games)"
-            + (string.IsNullOrWhiteSpace(predicate) ? "" : $" AND ({predicate})"))
-            .WithParameter("@cs", QuizTypes[0]).WithParameter("@films", QuizTypes[1]).WithParameter("@games", QuizTypes[2]);
-        using var iterator = Container.GetItemQueryIterator<JsonElement>(query,
+        var query = QuizStorageQuery.Create(arguments);
+        using var iterator = Container.GetItemQueryIterator<JsonElement>(query.Definition,
             requestOptions: new QueryRequestOptions
             {
                 PartitionKey = new PartitionKey(chatId),
-                MaxItemCount = limit + 1,
+                MaxItemCount = query.Limit + 1,
                 MaxConcurrency = 1,
-                MaxBufferedItemCount = limit + 1,
+                MaxBufferedItemCount = query.Limit + 1,
                 EnableScanInQuery = false
             });
         var records = new List<object>();
         double charge = 0;
         var truncated = false;
+        var progress = query.FullRecords && query.Dataset == "book_quizzes" ? await ReadProgress(chatId, cancellation) : null;
         // At most two pages, including empty pages. Never drain an unbounded iterator.
         for (var page = 0; page < 2 && iterator.HasMoreResults; page++)
         {
@@ -106,8 +106,8 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
             if (charge > 50) return new("error", "budget_exceeded", "Query exceeded the 50 RU read budget. Narrow the predicate.");
             foreach (var record in response)
             {
-                if (records.Count == limit) { truncated = true; break; }
-                var view = View(record.Deserialize<TimedTaskQuiz>()!, record.GetProperty("_etag").GetString()!);
+                if (records.Count == query.Limit) { truncated = true; break; }
+                var view = query.FullRecords ? View(record, record.GetProperty("_etag").GetString()!, progress) : record.Clone();
                 records.Add(view);
                 var candidate = new StorageResult("ok", Data: new { records, truncated = true, requestCharge = charge });
                 if (Encoding.UTF8.GetByteCount(candidate.ToJson()) > 12000)
@@ -117,9 +117,25 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
                     break;
                 }
             }
-            if (truncated || records.Count == limit) break;
+            if (truncated || records.Count == query.Limit) break;
         }
         truncated |= iterator.HasMoreResults;
+        if (query.Aggregate && (truncated || records.Count != 1))
+            return new("error", "budget_exceeded", "COUNT did not complete within the read budget. Narrow the predicate; no approximate count is returned.");
+        if (query.Exists && records.Count == 0 && truncated)
+            return new("error", "budget_exceeded", "Existence check did not complete within the read budget. Narrow the predicate; no negative result is returned.");
+        if (query.Scalar)
+        {
+            var scalarResult = new StorageResult("ok", Data: new
+            {
+                value = query.Exists ? (object)(records.Count != 0) : query.Aggregate ? records[0] : records.ToArray(),
+                truncated = query.Exists ? false : truncated,
+                requestCharge = charge,
+            });
+            return Encoding.UTF8.GetByteCount(scalarResult.ToJson()) > 12000
+                ? new("error", "budget_exceeded", "Scalar query result exceeds the 12000-byte tool result limit.")
+                : scalarResult;
+        }
         var result = new StorageResult("ok", Data: new { records, truncated, requestCharge = charge });
         while (records.Count > 0 && Encoding.UTF8.GetByteCount(result.ToJson()) > 12000)
         {
@@ -130,46 +146,29 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
         return result;
     }
 
-    public static void ValidatePredicate(string predicate)
-    {
-        if (predicate == null || predicate.Length > 512)
-            throw new ArgumentException("Predicate must be at most 512 characters.");
-        if (predicate.Contains('\\'))
-            throw new ArgumentException("Backslash escapes are not supported in predicates.");
-        var stripped = Regex.Replace(predicate, @"'([^']|'')*'", "''");
-        var tokens = Regex.Matches(stripped,
-            @"c\.[A-Za-z]+|[A-Za-z_]+|\d+(?:\.\d+)?|!=|<=|>=|[=<>(),']|\s+", RegexOptions.CultureInvariant);
-        if (string.Concat(tokens.Select(t => t.Value)) != stripped)
-            throw new ArgumentException("Unsupported predicate syntax. Use a Cosmos SQL WHERE expression, not a full query.");
-        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "c.question", "c.type", "c.explanation", "c.correctOptionId", "c.posted",
-            "AND", "OR", "NOT", "TRUE", "FALSE", "NULL",
-            "CONTAINS", "STARTSWITH", "ENDSWITH", "LOWER", "UPPER", "IS_DEFINED", "IS_NULL",
-        };
-        var depth = 0;
-        foreach (Match token in tokens)
-        {
-            if (token.Value == "(") depth++;
-            if (token.Value == ")" && --depth < 0) throw new ArgumentException("Unbalanced predicate parentheses.");
-            if (char.IsLetter(token.Value[0]) && !allowed.Contains(token.Value))
-                throw new ArgumentException("Unknown field or operator. Allowed fields: c.question, c.type, c.explanation, c.correctOptionId, c.posted.");
-        }
-        if (depth != 0) throw new ArgumentException("Unbalanced predicate parentheses.");
-    }
+    public static void ValidatePredicate(string predicate) => QuizStorageQuery.ValidatePredicate(predicate);
 
-    private async Task<ItemResponse<TimedTaskQuiz>> Read(string id, long chatId, CancellationToken cancellation)
+    private async Task<ItemResponse<JsonElement>> Read(string id, long chatId, string dataset, CancellationToken cancellation)
     {
         if (string.IsNullOrWhiteSpace(id) || id.Length > 200 || id.IndexOfAny(['/', '\\', '?', '#']) >= 0)
             throw new ArgumentException("Invalid quiz ID.");
-        var response = await Container.ReadItemAsync<TimedTaskQuiz>(id, new PartitionKey(chatId), cancellationToken: cancellation);
-        if (response.Resource.ChatId != chatId || !QuizTypes.Contains(response.Resource.Type))
+        var response = await Container.ReadItemAsync<JsonElement>(id, new PartitionKey(chatId), cancellationToken: cancellation);
+        var record = response.Resource;
+        var type = record.GetProperty("type").GetString();
+        var supported = dataset switch
+        {
+            "quiz_questions" => QuizTypes.Contains(type),
+            "book_quizzes" => type == "book-quiz" && record.GetProperty("seriesId").GetString() == BookQuiz.Series,
+            "book_quiz_progress" => type == "book-quiz-progress" && id == "book-quiz-progress:" + BookQuiz.Series,
+            _ => false,
+        };
+        if (record.GetProperty("chatId").GetInt64() != chatId || !supported)
             throw new ArgumentException("Record is not a supported quiz in this chat.");
         return response;
     }
 
     private async Task<StorageResult> Mutate(string operation, JsonElement arguments, StorageContext context,
-        int mutationIndex, Action markWriteStarted, CancellationToken cancellation)
+        string dataset, int mutationIndex, Action markWriteStarted, CancellationToken cancellation)
     {
         if (mutationIndex is < 1 or > 12) throw new ArgumentException("Invalid mutation operation index.");
         var receiptId = $"storage-operation:{context.UserId}:{context.MessageId}:{mutationIndex}";
@@ -187,7 +186,15 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
 
         var batch = Container.CreateTransactionalBatch(partition);
         var ids = new List<string>();
-        if (operation == "storage_create")
+        var hasMore = false;
+        if (operation == "storage_shuffle_options")
+        {
+            var prepared = await PrepareOptionsShuffle(batch, arguments, context, cancellation);
+            if (prepared.Error != null) return prepared.Error;
+            ids.AddRange(prepared.Ids);
+            hasMore = prepared.HasMore;
+        }
+        else if (operation == "storage_create")
         {
             var records = arguments.GetProperty("records");
             if (records.ValueKind != JsonValueKind.Array || records.GetArrayLength() is < 1 or > 5)
@@ -203,31 +210,52 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
         else if (operation is "storage_update" or "storage_delete")
         {
             var id = arguments.GetProperty("id").GetString()!;
-            var current = await Read(id, context.ChatId, cancellation);
+            var current = await Read(id, context.ChatId, dataset, cancellation);
             var version = arguments.GetProperty("version").GetString();
             if (string.IsNullOrWhiteSpace(version) || current.ETag.Trim('"') != version.Trim('"'))
                 return new("error", "conflict", "Version changed. Read the current record.");
-            if (current.Resource.Posted || current.Resource.DeliveryPending)
-                return new("error", "forbidden", "Posted quizzes and quizzes with pending delivery cannot be changed.");
-            var requestOptions = new TransactionalBatchItemRequestOptions { IfMatchEtag = current.ETag };
-            if (operation == "storage_delete") batch.DeleteItem(id, requestOptions);
+            if (dataset == "book_quizzes")
+            {
+                var progress = await ReadProgress(context.ChatId, cancellation);
+                var book = current.Resource.Deserialize<BookQuiz>(StorageResult.JsonOptions)!;
+                if (progress.Sending || book.Sequence < progress.NextSequence)
+                    return new("error", "forbidden", "Delivered book quizzes and a series with an in-flight delivery cannot be changed.");
+                var replacement = ParseBookRecord(arguments.GetProperty("record"), book);
+                // Guard the sender's progress snapshot in the same transaction as the quiz edit.
+                if (progress.ETag == null) batch.CreateItem(progress);
+                else batch.PatchItem(progress.Id, new[] { PatchOperation.Set("/nextSequence", progress.NextSequence) },
+                    new TransactionalBatchPatchItemRequestOptions { IfMatchEtag = progress.ETag });
+                batch.PatchItem(id, EditablePatch(replacement.Type, replacement.Question, replacement.Options,
+                    replacement.CorrectOptionId, replacement.Explanation),
+                    new TransactionalBatchPatchItemRequestOptions { IfMatchEtag = current.ETag });
+            }
             else
             {
-                var replacement = ParseRecord(arguments.GetProperty("record"), id, context.ChatId);
-                batch.PatchItem(id, new[]
+                var quiz = current.Resource.Deserialize<TimedTaskQuiz>()!;
+                if (quiz.Posted || quiz.DeliveryPending)
+                    return new("error", "forbidden", "Posted quizzes and quizzes with pending delivery cannot be changed.");
+                var requestOptions = new TransactionalBatchItemRequestOptions { IfMatchEtag = current.ETag };
+                if (operation == "storage_delete") batch.DeleteItem(id, requestOptions);
+                else
                 {
+                    var replacement = ParseRecord(arguments.GetProperty("record"), id, context.ChatId);
+                    batch.PatchItem(id, new[]
+                    {
                     PatchOperation.Set("/type", replacement.Type),
                     PatchOperation.Set("/question", replacement.Question),
                     PatchOperation.Set("/options", replacement.Options),
                     PatchOperation.Set("/correctOptionId", replacement.CorrectOptionId),
                     PatchOperation.Set("/explanation", replacement.Explanation)
                 }, new TransactionalBatchPatchItemRequestOptions { IfMatchEtag = current.ETag });
+                }
             }
             ids.Add(id);
         }
         else throw new ArgumentException("Unknown storage operation.");
 
-        var result = new StorageResult("ok", Data: new { operation, count = ids.Count, ids });
+        var result = operation == "storage_shuffle_options"
+            ? new StorageResult("ok", Data: new { operation, count = ids.Count, ids, hasMore })
+            : new StorageResult("ok", Data: new { operation, count = ids.Count, ids });
         // Receipt and mutation commit atomically in the existing /chatId partition.
         batch.CreateItem(new StorageOperationReceipt
         {
@@ -242,6 +270,63 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
             return new("error", response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed
                 ? "conflict" : "storage_error", "Atomic write did not return success. Its outcome may be uncertain; do not retry automatically.");
         return result;
+    }
+
+    private async Task<(List<string> Ids, bool HasMore, StorageResult? Error)> PrepareOptionsShuffle(
+        TransactionalBatch batch, JsonElement arguments, StorageContext context, CancellationToken cancellation)
+    {
+        var limit = arguments.GetProperty("limit").GetInt32();
+        if (limit is < 1 or > 5) throw new ArgumentException("Shuffle batch limit must be between 1 and 5.");
+        var progress = await ReadProgress(context.ChatId, cancellation);
+        if (progress.Sending) return ([], false, new("error", "forbidden", "Book delivery is in flight; do not reshuffle now."));
+        var requestId = $"{context.UserId}:{context.MessageId}";
+        var query = new QueryDefinition($"SELECT TOP {limit + 1} * FROM c WHERE c.type = @type AND c.seriesId = @series"
+            + " AND c.sequence >= @next AND (NOT IS_DEFINED(c.optionsShuffleRequest) OR c.optionsShuffleRequest != @request)"
+            + " ORDER BY c.sequence")
+            .WithParameter("@type", "book-quiz").WithParameter("@series", BookQuiz.Series)
+            .WithParameter("@next", progress.NextSequence).WithParameter("@request", requestId);
+        using var iterator = Container.GetItemQueryIterator<JsonElement>(query, requestOptions: new QueryRequestOptions
+        { PartitionKey = new PartitionKey(context.ChatId), MaxItemCount = limit + 1, MaxConcurrency = 1, MaxBufferedItemCount = limit + 1, EnableScanInQuery = false });
+        var records = new List<JsonElement>();
+        double charge = 0;
+        for (var page = 0; page < 2 && iterator.HasMoreResults && records.Count <= limit; page++)
+        {
+            var response = await iterator.ReadNextAsync(cancellation);
+            charge += response.RequestCharge;
+            if (charge > 50) return ([], false, new("error", "budget_exceeded", "Shuffle query exceeded its 50 RU budget; no changes committed."));
+            records.AddRange(response.Select(record => record.Clone()));
+        }
+        if (records.Count == 0 && iterator.HasMoreResults)
+            return ([], false, new("error", "budget_exceeded", "Shuffle query did not complete within two pages; no changes committed."));
+        var ids = new List<string>();
+        foreach (var record in records.Take(limit))
+        {
+            var book = record.Deserialize<BookQuiz>(StorageResult.JsonOptions)!;
+            book.Validate();
+            var answer = book.Options[book.CorrectOptionId];
+            var target = RandomNumberGenerator.GetInt32(book.Options.Length - 1);
+            if (target >= book.CorrectOptionId) target++;
+            for (var index = book.Options.Length - 1; index > 0; index--)
+            {
+                var other = RandomNumberGenerator.GetInt32(index + 1);
+                (book.Options[index], book.Options[other]) = (book.Options[other], book.Options[index]);
+            }
+            var actual = Array.IndexOf(book.Options, answer);
+            (book.Options[actual], book.Options[target]) = (book.Options[target], book.Options[actual]);
+            batch.PatchItem(book.Id, new[]
+            {
+                PatchOperation.Set("/options", book.Options), PatchOperation.Set("/correctOptionId", target),
+                PatchOperation.Set("/optionsShuffleRequest", requestId)
+            }, new TransactionalBatchPatchItemRequestOptions { IfMatchEtag = record.GetProperty("_etag").GetString() });
+            ids.Add(book.Id);
+        }
+        if (ids.Count != 0)
+        {
+            if (progress.ETag == null) batch.CreateItem(progress);
+            else batch.PatchItem(progress.Id, new[] { PatchOperation.Set("/nextSequence", progress.NextSequence) },
+                new TransactionalBatchPatchItemRequestOptions { IfMatchEtag = progress.ETag });
+        }
+        return (ids, records.Count > limit || iterator.HasMoreResults, null);
     }
 
     private static TimedTaskQuiz ParseRecord(JsonElement record, string id, long chatId)
@@ -268,18 +353,93 @@ public sealed class QuizStorageRepository(CosmosClient cosmos, IOptions<CosmosDb
         };
     }
 
-    private static object View(TimedTaskQuiz quiz, string version) => new
+    private async Task<BookQuizProgress> ReadProgress(long chatId, CancellationToken cancellation)
     {
-        id = quiz.Id,
-        type = quiz.Type,
-        question = quiz.Question,
-        options = quiz.Options,
-        correctOptionId = quiz.CorrectOptionId,
-        explanation = quiz.Explanation,
-        posted = quiz.Posted,
-        deliveryPending = quiz.DeliveryPending,
-        version = version.Trim('"'),
-    };
+        try
+        {
+            var response = await Container.ReadItemAsync<BookQuizProgress>("book-quiz-progress:" + BookQuiz.Series,
+                new PartitionKey(chatId), cancellationToken: cancellation);
+            response.Resource.ETag = response.ETag;
+            return response.Resource;
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            return new BookQuizProgress { ChatId = chatId };
+        }
+    }
+
+    private static BookQuiz ParseBookRecord(JsonElement record, BookQuiz book)
+    {
+        StorageTools.RequireFields(record, "type", "question", "options", "correctOptionId", "explanation");
+        var input = record.Deserialize<TimedTaskQuizInput>(new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+        if (input.Type != "book-quiz") throw new ArgumentException("Book quiz type cannot be changed.");
+        book.Question = input.Question;
+        book.Options = input.Options;
+        book.CorrectOptionId = input.CorrectOptionId;
+        book.Explanation = input.Explanation;
+        book.Validate();
+        return book;
+    }
+
+    private static PatchOperation[] EditablePatch(string type, string question, string[] options, int correctOptionId, string explanation) =>
+    [
+        PatchOperation.Set("/type", type), PatchOperation.Set("/question", question), PatchOperation.Set("/options", options),
+        PatchOperation.Set("/correctOptionId", correctOptionId), PatchOperation.Set("/explanation", explanation)
+    ];
+
+    private static object View(JsonElement record, string version, BookQuizProgress? progress)
+    {
+        if (record.GetProperty("type").GetString() == "book-quiz")
+        {
+            var book = record.Deserialize<BookQuiz>(StorageResult.JsonOptions)!;
+            return new
+            {
+                id = book.Id,
+                type = book.Type,
+                seriesId = book.SeriesId,
+                sequence = book.Sequence,
+                chapter = book.Chapter,
+                section = book.Section,
+                printedPage = book.PrintedPage,
+                pdfPage = book.PdfPage,
+                question = book.Question,
+                options = book.Options,
+                correctOptionId = book.CorrectOptionId,
+                explanation = book.Explanation,
+                imageReference = book.ImageReference,
+                imageDescription = book.ImageDescription,
+                posted = book.Sequence < progress!.NextSequence,
+                deliveryPending = progress.Sending && book.Sequence == progress.NextSequence,
+                version = version.Trim('"'),
+            };
+        }
+        if (record.GetProperty("type").GetString() == "book-quiz-progress")
+        {
+            var state = record.Deserialize<BookQuizProgress>(StorageResult.JsonOptions)!;
+            return new
+            {
+                id = state.Id,
+                type = state.Type,
+                nextSequence = state.NextSequence,
+                sending = state.Sending,
+                lastSentUtc = state.LastSentUtc,
+                version = version.Trim('"')
+            };
+        }
+        var quiz = record.Deserialize<TimedTaskQuiz>()!;
+        return new
+        {
+            id = quiz.Id,
+            type = quiz.Type,
+            question = quiz.Question,
+            options = quiz.Options,
+            correctOptionId = quiz.CorrectOptionId,
+            explanation = quiz.Explanation,
+            posted = quiz.Posted,
+            deliveryPending = quiz.DeliveryPending,
+            version = version.Trim('"'),
+        };
+    }
 
     private sealed record TimedTaskQuizInput(string Type, string Question, string[] Options, int CorrectOptionId, string Explanation);
 }
