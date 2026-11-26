@@ -6,6 +6,7 @@ using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Globalization;
 using System.Net.Http;
+using Ungerfall.ChatGpt.TelegramBot.Storage;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Configuration;
 
@@ -56,14 +57,15 @@ public sealed class AzureOpenAiSettings
         Environment.GetEnvironmentVariable("AZURE_OPENAI_AUTONOMOUS_MAX_COMPLETION_TOKENS") is { } autonomousTokens
             ? int.Parse(autonomousTokens, CultureInfo.InvariantCulture) : null);
 
-    public IChatCompletionClient CreateChatCompletionClient(string deployment, HttpClient? httpClient = null)
+    public IChatCompletionClient CreateChatCompletionClient(string deployment, HttpClient? httpClient = null,
+        StorageTools? storageTools = null)
     {
         var options = new OpenAIClientOptions
         {
             Endpoint = new Uri(new Uri(Endpoint), "openai/v1/"),
         };
         if (httpClient != null) options.Transport = new HttpClientPipelineTransport(httpClient);
-        return new OpenAiChatCompletionClient(new ChatClient(deployment, new ApiKeyCredential(ApiKey), options));
+        return new OpenAiChatCompletionClient(new ChatClient(deployment, new ApiKeyCredential(ApiKey), options), storageTools);
     }
 
     public IImageGenerationClient CreateImageGenerationClient(HttpClient httpClient, string deployment) =>
@@ -100,7 +102,10 @@ public static class AzureOpenAiServiceCollectionExtensions
     {
         var settings = AzureOpenAiSettings.FromEnvironment();
         services.AddSingleton(settings);
-        services.AddSingleton<IChatCompletionClient>(_ => settings.CreateChatCompletionClient(settings.ChatDeployment));
+        services.AddSingleton<IQuizStorage, QuizStorageRepository>();
+        services.AddSingleton<StorageTools>();
+        services.AddSingleton<IChatCompletionClient>(sp => settings.CreateChatCompletionClient(settings.ChatDeployment,
+            storageTools: sp.GetRequiredService<StorageTools>()));
         services.AddSingleton(_ => new SummaryOpenAiClient(
             settings.CreateChatCompletionClient(settings.SummaryDeployment), settings.SummaryDeployment, settings.Summary));
         services.AddHttpClient("azure-openai-images")

@@ -44,7 +44,7 @@ public sealed class CompletionSettings
         var outputTokens = maxCompletionTokens ?? MaxCompletionTokens;
         if (outputTokens <= 0 || outputTokens > MaxCompletionTokens)
             throw new ArgumentOutOfRangeException(nameof(maxCompletionTokens));
-        return new ChatCompletionRequest(messages.ToArray(), deployment, Temperature, outputTokens, user);
+        return new ChatCompletionRequest(messages.ToArray(), deployment, Temperature, outputTokens, user, InputTokenLimit: InputTokens);
     }
 
     public static CompletionSettings FromEnvironment(bool summary = false) =>
