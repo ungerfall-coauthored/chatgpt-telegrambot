@@ -74,6 +74,50 @@ See the request settings below before switching model families. Optional
 no-mention replies use a separate **Microsoft-Decision-1.1** deployment in
 Foundry, described below. They do not call the public OpenAI API.
 
+### Cosmos history proof of concept
+
+`src/utils.history-poc` is an isolated prototype, not a deployed history feature.
+It does not change the bot's Cosmos SDK, webhook, retention, or tool definitions.
+The prototype uses `AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT` (for example
+`bot-embeddings`) and the dedicated `AZURE_OPENAI_EMBEDDINGS_API_KEY`.
+`AZURE_OPENAI_EMBEDDINGS_ENDPOINT` is optional and otherwise defaults to
+`AZURE_OPENAI_ENDPOINT`. Embeddings use the official OpenAI SDK, `/openai/v1/`,
+and 512 dimensions.
+
+Privately load the settings into the test process, then run:
+
+```sh
+HISTORY_POC_LIVE_TEST=1 dotnet test tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj -c Release --filter 'FullyQualifiedName~CosmosHistoryPocTests' --logger 'console;verbosity=detailed'
+```
+
+Run this selector separately from offline tests, which replace process-wide
+settings with synthetic values. The tests require no Telegram interaction.
+They first verify the embedding
+deployment. The retrieval test refuses to create a container unless a read-only
+throughput probe confirms serverless mode; it never requests provisioned
+throughput or changes existing containers. Vector search must be available on
+the account. Each run creates a uniquely named `history-poc-*` container with
+a one-hour document TTL and deletes that container in cleanup.
+
+Without `HISTORY_POC_EXPORT`, the corpus is synthetic. Set that variable to a
+local Telegram Desktop `result.json.zip` only for a consented chat. The prototype
+samples at most 1,000 recent conversation chunks, preserves message order and
+day/topic boundaries, and truncates text for the experiment. It is not a complete
+or lossless importer. Neither the export nor source text belongs in Git, CI
+artifacts, or test output.
+
+The experiment measures four factual retrievals, approximate/exact top-five
+overlap, partition isolation, idempotent replay, stale ETag rejection, deletion,
+embedding input tokens, latency, and observed request units. It stops issuing
+normal operations after 100,000 observed RUs and caps initial embedding input at
+500,000 tokens. The RU threshold is a stop-after-observation guard, not a hard
+billing cap; cleanup still runs. Identical approximate/exact results or RU costs
+do not prove that DiskANN, rather than a scan, served the queries. DiskANN is
+approximate, and a small passing corpus does not prove recall or cost for the
+full archive. Production support
+still needs durable asynchronous ingestion, permission enforcement, edit/delete
+reconciliation, coverage reporting, retention policy, and bounded history tools.
+
 ### Storage function tools
 
 The chat deployment must support strict function calling. Storage tools are
