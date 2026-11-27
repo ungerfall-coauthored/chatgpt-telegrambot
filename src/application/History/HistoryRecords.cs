@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Serialization;
@@ -79,6 +80,10 @@ public sealed class HistoryConsent
     public long UserId { get; set; }
     public bool Granted { get; set; }
     public DateTime ChangedUtc { get; set; }
+    public bool Purging { get; set; }
+    public string? PurgeEpoch { get; set; }
+    public string? Generation { get; set; }
+    public bool WasRevoked { get; set; }
 }
 
 public sealed class HistoryImport
@@ -112,6 +117,27 @@ public sealed class HistoryChunk
     public int[] Lengths { get; set; } = [];
     public string Profile { get; set; } = "";
     public float[] Embedding { get; set; } = [];
+}
+
+public sealed class HistoryUsage
+{
+    public string Id { get; set; } = "";
+    public long ChatId { get; set; }
+    public string Kind { get; set; } = "usage";
+    public decimal UsedUsd { get; set; }
+    public Dictionary<string, decimal> Reservations { get; set; } = new();
+}
+
+public sealed record HistoryReservation(string LedgerId, string Token);
+
+public sealed class HistorySweep
+{
+    public string Id { get; set; } = "maintenance:sweep";
+    public long ChatId { get; set; }
+    public string Kind { get; set; } = "maintenance";
+    public long Cutoff { get; set; }
+    public string? Continuation { get; set; }
+    [JsonIgnore] public string? ETag { get; set; }
 }
 
 public static class HistoryHash

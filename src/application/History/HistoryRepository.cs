@@ -9,12 +9,81 @@ using Microsoft.Azure.Cosmos;
 
 namespace Ungerfall.ChatGpt.TelegramBot.History;
 
-public sealed class HistoryRepository
+public interface IHistoryConsent
+{
+    bool Allows(long chat);
+    Task<bool> IsRevoked(long chat, long user, CancellationToken cancellation);
+    Task<bool> HasRevocations(long chat, CancellationToken cancellation);
+    Task<string?> GetContextGeneration(long chat, long user, CancellationToken cancellation);
+    Task<bool> IsContextAllowed(long chat, long user, string? generation, CancellationToken cancellation);
+}
+
+public sealed class HistoryPurgeSupersededException : InvalidOperationException;
+
+public sealed class HistoryRepository : IHistoryConsent
 {
     private readonly Container _messages;
     private readonly Container _chunks;
     private readonly HistoryOptions _options;
     public double RequestUnits { get; private set; }
+    public static decimal RuCost(double units) => (decimal)units * 0.305m / 1000000;
+
+    private async Task<HistoryReservation?> ChangeBudget(string id, string? token, decimal? reserve,
+        decimal charge, CancellationToken cancellation)
+    {
+        var partition = new PartitionKey(0);
+        for (var attempt = 0; attempt < 12; attempt++)
+        {
+            HistoryUsage ledger;
+            string? etag = null;
+            try
+            {
+                var read = await _messages.ReadItemAsync<HistoryUsage>(id, partition, cancellationToken: cancellation);
+                RequestUnits += read.RequestCharge;
+                ledger = read.Resource;
+                etag = read.ETag;
+            }
+            catch (CosmosException error) when (error.StatusCode == HttpStatusCode.NotFound)
+            {
+                RequestUnits += error.RequestCharge;
+                ledger = new HistoryUsage { Id = id, ChatId = 0 };
+            }
+            if (reserve != null)
+            {
+                if (ledger.UsedUsd + ledger.Reservations.Values.Sum() + reserve > _options.MonthlyBudgetUsd) return null;
+                ledger.Reservations.Add(token!, reserve.Value);
+            }
+            else if (token != null && !ledger.Reservations.Remove(token)) return null;
+            ledger.UsedUsd += charge;
+            try
+            {
+                var written = etag == null
+                    ? await _messages.CreateItemAsync(ledger, partition, cancellationToken: cancellation)
+                    : await _messages.ReplaceItemAsync(ledger, id, partition,
+                        new ItemRequestOptions { IfMatchEtag = etag }, cancellation);
+                RequestUnits += written.RequestCharge;
+                return new(id, token ?? "");
+            }
+            catch (CosmosException error) when (error.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed)
+            {
+                RequestUnits += error.RequestCharge;
+            }
+        }
+        throw new InvalidOperationException("History budget contention exceeded its retry limit.");
+    }
+
+    public Task<HistoryReservation?> ReserveBudget(decimal reserve, CancellationToken cancellation)
+    {
+        if (reserve <= 0) throw new ArgumentOutOfRangeException(nameof(reserve));
+        return ChangeBudget($"budget:{DateTime.UtcNow:yyyyMM}", Guid.NewGuid().ToString("N"), reserve, 0, cancellation);
+    }
+
+    public Task SettleBudget(HistoryReservation? reservation, decimal charge, CancellationToken cancellation)
+    {
+        if (charge < 0) throw new ArgumentOutOfRangeException(nameof(charge));
+        return ChangeBudget(reservation?.LedgerId ?? $"budget:{DateTime.UtcNow:yyyyMM}", reservation?.Token,
+            null, charge, cancellation);
+    }
 
     public HistoryRepository(CosmosClient client, string database, HistoryOptions options)
     {
@@ -63,14 +132,110 @@ public sealed class HistoryRepository
     public async Task<bool> HasConsent(long chat, long user, CancellationToken cancellation) =>
         (await Read<HistoryConsent>(_messages, chat, $"consent:{user}", cancellation))?.Value.Granted == true;
 
-    public async Task SetConsent(long chat, long user, bool granted, CancellationToken cancellation)
+    public async Task<bool> IsRevoked(long chat, long user, CancellationToken cancellation) =>
+        _options.Allows(chat) && (await Read<HistoryConsent>(_messages, chat, $"consent:{user}", cancellation))?.Value.Granted == false;
+
+    public bool Allows(long chat) => _options.Allows(chat);
+
+    public async Task<bool> HasRevocations(long chat, CancellationToken cancellation) =>
+        _options.Allows(chat) && (await Query<int>(chat, new QueryDefinition(
+            "SELECT TOP 1 VALUE 1 FROM c WHERE c.kind = 'consent' AND (c.granted = false OR c.wasRevoked = true)"), 1, cancellation)).Count != 0;
+
+    public async Task<string?> GetContextGeneration(long chat, long user, CancellationToken cancellation) =>
+        !_options.Allows(chat) ? null : (await Read<HistoryConsent>(_messages, chat, $"consent:{user}", cancellation))?.Value.Generation;
+
+    public async Task<bool> IsContextAllowed(long chat, long user, string? generation, CancellationToken cancellation)
+    {
+        if (!_options.Allows(chat)) return true;
+        var consent = (await Read<HistoryConsent>(_messages, chat, $"consent:{user}", cancellation))?.Value;
+        if (consent == null) return generation == null;
+        if (!consent.Granted) return false;
+        return generation == null ? !consent.WasRevoked : generation == consent.Generation;
+    }
+
+    public async Task<string?> GetPurgeEpoch(long chat, long user, CancellationToken cancellation)
+    {
+        for (var attempt = 0; attempt < 12; attempt++)
+        {
+            var read = await Read<HistoryConsent>(_messages, chat, $"consent:{user}", cancellation);
+            if (read == null || read.Value.Value.Granted || !read.Value.Value.Purging) return null;
+            if (!string.IsNullOrEmpty(read.Value.Value.PurgeEpoch)) return read.Value.Value.PurgeEpoch;
+            read.Value.Value.PurgeEpoch = Guid.NewGuid().ToString("N");
+            try
+            {
+                var response = await _messages.ReplaceItemAsync(read.Value.Value, read.Value.Value.Id, new PartitionKey(chat),
+                    new ItemRequestOptions { IfMatchEtag = read.Value.ETag }, cancellation);
+                RequestUnits += response.RequestCharge;
+                return read.Value.Value.PurgeEpoch;
+            }
+            catch (CosmosException error) when (error.StatusCode == HttpStatusCode.PreconditionFailed)
+            {
+                RequestUnits += error.RequestCharge;
+            }
+        }
+        throw new InvalidOperationException("History purge contention exceeded its retry limit.");
+    }
+
+    private async Task<(HistoryConsent Value, string ETag)> RequirePurge(long chat, long user, string epoch,
+        CancellationToken cancellation)
+    {
+        var consent = await Read<HistoryConsent>(_messages, chat, $"consent:{user}", cancellation);
+        if (consent == null || consent.Value.Value.Granted || !consent.Value.Value.Purging
+            || consent.Value.Value.PurgeEpoch != epoch) throw new HistoryPurgeSupersededException();
+        return consent.Value;
+    }
+
+    public async Task PurgeRolling(long chat, long user, string epoch, CancellationToken cancellation)
+    {
+        Scope(chat);
+        var name = Environment.GetEnvironmentVariable("CosmosTelegramMessagesContainer");
+        if (string.IsNullOrWhiteSpace(name)) return;
+        var container = _messages.Database.GetContainer(name);
+        using var iterator = container.GetItemQueryIterator<JsonElement>(
+            new QueryDefinition("SELECT c.id, c._etag FROM c WHERE c.userId = @user").WithParameter("@user", user),
+            requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(chat), MaxItemCount = 50 });
+        while (iterator.HasMoreResults)
+        {
+            var page = await iterator.ReadNextAsync(cancellation);
+            RequestUnits += page.RequestCharge;
+            await RequirePurge(chat, user, epoch, cancellation);
+            foreach (var row in page)
+            {
+                try
+                {
+                    var deleted = await container.DeleteItemAsync<JsonElement>(row.GetProperty("id").GetString()!,
+                        new PartitionKey(chat), new ItemRequestOptions { IfMatchEtag = row.GetProperty("_etag").GetString() },
+                        cancellationToken: cancellation);
+                    RequestUnits += deleted.RequestCharge;
+                }
+                catch (CosmosException error) when (error.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.PreconditionFailed)
+                {
+                    RequestUnits += error.RequestCharge;
+                }
+            }
+        }
+    }
+
+    public async Task SetConsent(long chat, long user, bool granted, CancellationToken cancellation, bool purging = false)
     {
         Scope(chat);
         if (user <= 0) throw new ArgumentException("Invalid consent identity.");
-        var response = await _messages.UpsertItemAsync(new HistoryConsent
+        var existing = await Read<HistoryConsent>(_messages, chat, $"consent:{user}", cancellation);
+        if (granted && existing?.Value.Purging == true)
+            throw new InvalidOperationException("Author purge is still in progress.");
+        if (granted && existing?.Value.Granted == true) return;
+        if (!granted && purging && existing?.Value.Purging == true) return;
+        var consent = new HistoryConsent
         {
             Id = $"consent:{user}", ChatId = chat, UserId = user, Granted = granted, ChangedUtc = DateTime.UtcNow,
-        }, new PartitionKey(chat), cancellationToken: cancellation);
+            Purging = purging, PurgeEpoch = purging ? Guid.NewGuid().ToString("N") : null,
+            Generation = Guid.NewGuid().ToString("N"),
+            WasRevoked = !granted || existing?.Value.WasRevoked == true || existing?.Value.Granted == false,
+        };
+        var response = existing == null
+            ? await _messages.CreateItemAsync(consent, new PartitionKey(chat), cancellationToken: cancellation)
+            : await _messages.ReplaceItemAsync(consent, consent.Id, new PartitionKey(chat),
+                new ItemRequestOptions { IfMatchEtag = existing.Value.ETag }, cancellation);
         RequestUnits += response.RequestCharge;
     }
 
@@ -85,6 +250,7 @@ public sealed class HistoryRepository
             var response = await _messages.CreateItemAsync(new HistoryConsent
             {
                 Id = $"consent:{user}", ChatId = chat, UserId = user, Granted = true, ChangedUtc = DateTime.UtcNow,
+                Generation = Guid.NewGuid().ToString("N"),
             }, new PartitionKey(chat), cancellationToken: cancellation);
             RequestUnits += response.RequestCharge;
             return true;
@@ -100,6 +266,9 @@ public sealed class HistoryRepository
     {
         if (existing.Deleted && !incoming.Deleted) return false;
         if (existing.Revision == incoming.Revision) return false;
+        if (existing.Deleted && incoming.Deleted && incoming.UserId == null && incoming.User.Length == 0
+            && incoming.Text.Length == 0 && !incoming.Consented && (existing.UserId != null || existing.User.Length != 0))
+            return true;
         if (incoming.Deleted && !existing.Deleted) return true;
         if (incoming.Origin == "legacy") return false;
         var incomingDate = incoming.EditedAtUtc ?? incoming.Date;
@@ -125,7 +294,7 @@ public sealed class HistoryRepository
     }
 
     public async Task<int> SaveBatch(IReadOnlyList<HistoryMessage> messages, CancellationToken cancellation,
-        HistoryImport? import = null)
+        HistoryImport? import = null, (long UserId, string Epoch)? purge = null)
     {
         if (messages.Count is < 1 or > 16) throw new ArgumentException("History batches require 1-16 messages.");
         var chat = messages[0].ChatId;
@@ -143,7 +312,14 @@ public sealed class HistoryRepository
             cancellation.ThrowIfCancellationRequested();
             var consentIds = messages.Where(message => message.Consented && !message.Deleted && message.UserId != null)
                 .Select(message => $"consent:{message.UserId}").Distinct().ToArray();
-            var savedMessages = await ReadMany(chat, messages.Select(message => message.Id).Concat(consentIds), cancellation);
+            var purgeId = purge == null ? null : $"consent:{purge.Value.UserId}";
+            var savedMessages = await ReadMany(chat, messages.Select(message => message.Id).Concat(consentIds)
+                .Concat(purgeId == null ? Array.Empty<string>() : new[] { purgeId }), cancellation);
+            if (purge != null && (!savedMessages.TryGetValue(purgeId!, out var purgeConsent)
+                || purgeConsent.Value.Deserialize<HistoryConsent>(HistoryCosmosSerializer.Options) is not
+                    { Granted: false, Purging: true } currentPurge
+                || currentPurge.PurgeEpoch != purge.Value.Epoch))
+                throw new HistoryPurgeSupersededException();
             var changed = new List<(HistoryMessage New, HistoryMessage? Old, string? ETag)>();
             foreach (var message in messages)
             {
@@ -154,6 +330,7 @@ public sealed class HistoryRepository
                 var saved = savedMessages.TryGetValue(message.Id, out var row) ? row : default;
                 var existing = saved.Value.ValueKind == JsonValueKind.Undefined ? null
                     : saved.Value.Deserialize<HistoryMessage>(HistoryCosmosSerializer.Options);
+                if (purge != null && existing?.UserId != purge.Value.UserId) continue;
                 if (existing != null && !Supersedes(message, existing)) continue;
                 if (existing != null && (existing.Date != message.Date || existing.ThreadId != message.ThreadId))
                     throw new InvalidOperationException("History source timestamp or topic changed.");
@@ -196,6 +373,7 @@ public sealed class HistoryRepository
                 work.DispatchUntilUtc = null;
                 Add(work.Id, work, saved.ETag);
             }
+            var inconsistentCounter = false;
             foreach (var delta in deltas)
             {
                 controls.TryGetValue(delta.Key, out var saved);
@@ -203,8 +381,13 @@ public sealed class HistoryRepository
                     : saved.Value.Deserialize<HistoryActivity>(HistoryCosmosSerializer.Options)!;
                 counter.Messages += delta.Value.Delta;
                 counter.User = delta.Value.Value.User;
-                if (counter.Messages < 0) throw new InvalidOperationException("History activity counter is inconsistent.");
+                if (counter.Messages < 0) { inconsistentCounter = true; break; }
                 Add(counter.Id, counter, saved.ETag);
+            }
+            if (inconsistentCounter)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(10 * (attempt + 1)), cancellation);
+                continue;
             }
             var guards = changed.Where(item => item.New.Consented && !item.New.Deleted && item.New.UserId != null)
                 .Select(item => $"consent:{item.New.UserId}").Distinct().ToArray();
@@ -213,7 +396,13 @@ public sealed class HistoryRepository
                 var consent = savedMessages[id];
                 Add(id, consent.Value, consent.ETag);
             }
-            var checkpointIndex = changed.Count + buckets.Length + deltas.Count + guards.Length;
+            if (purgeId != null && !guards.Contains(purgeId))
+            {
+                var consent = savedMessages[purgeId];
+                Add(purgeId, consent.Value, consent.ETag);
+            }
+            var checkpointIndex = changed.Count + buckets.Length + deltas.Count + guards.Length
+                + (purgeId != null && !guards.Contains(purgeId) ? 1 : 0);
             if (import != null)
             {
                 ValidateImport(import);
@@ -286,11 +475,11 @@ public sealed class HistoryRepository
     }
 
     public async Task<(JsonElement[] Rows, string? Continuation)> Page(long chat, QueryDefinition query,
-        int limit, string? continuation, CancellationToken cancellation)
+        int limit, string? continuation, CancellationToken cancellation, bool chunks = false)
     {
         Scope(chat);
         if (limit is < 1 or > 50) throw new ArgumentOutOfRangeException(nameof(limit));
-        using var pages = _messages.GetItemQueryIterator<JsonElement>(query, continuation,
+        using var pages = (chunks ? _chunks : _messages).GetItemQueryIterator<JsonElement>(query, continuation,
             new QueryRequestOptions { PartitionKey = new PartitionKey(chat), MaxItemCount = limit, MaxConcurrency = 1 });
         var response = await pages.ReadNextAsync(cancellation);
         RequestUnits += response.RequestCharge;
@@ -298,11 +487,78 @@ public sealed class HistoryRepository
         return (response.ToArray(), response.ContinuationToken);
     }
 
+    public async Task<HistorySweep> GetSweep(long chat, CancellationToken cancellation)
+    {
+        var saved = await Read<HistorySweep>(_messages, chat, "maintenance:sweep", cancellation);
+        if (saved == null) return new HistorySweep { ChatId = chat };
+        saved.Value.Value.ETag = saved.Value.ETag;
+        return saved.Value.Value;
+    }
+
+    public async Task SaveSweep(HistorySweep sweep, CancellationToken cancellation)
+    {
+        Scope(sweep.ChatId);
+        try
+        {
+            var response = sweep.ETag == null
+                ? await _messages.CreateItemAsync(sweep, new PartitionKey(sweep.ChatId), cancellationToken: cancellation)
+                : await _messages.ReplaceItemAsync(sweep, sweep.Id, new PartitionKey(sweep.ChatId),
+                    new ItemRequestOptions { IfMatchEtag = sweep.ETag }, cancellation);
+            RequestUnits += response.RequestCharge;
+        }
+        catch (CosmosException error) when (error.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed)
+        {
+            RequestUnits += error.RequestCharge;
+        }
+    }
+
     public async Task SaveChunk(HistoryChunk chunk, CancellationToken cancellation)
     {
         Scope(chunk.ChatId);
         var response = await _chunks.UpsertItemAsync(chunk, new PartitionKey(chunk.ChatId), cancellationToken: cancellation);
         RequestUnits += response.RequestCharge;
+    }
+
+    public async Task DeleteActivity(long chat, long user, string epoch, string id, CancellationToken cancellation)
+    {
+        Scope(chat);
+        if (!id.StartsWith("activity:", StringComparison.Ordinal)) throw new ArgumentException("Invalid activity identity.");
+        for (var attempt = 0; attempt < 12; attempt++)
+        {
+            var consent = await RequirePurge(chat, user, epoch, cancellation);
+            var counter = await Read<HistoryActivity>(_messages, chat, id, cancellation);
+            if (counter == null) return;
+            if (counter.Value.Value.UserId != user || counter.Value.Value.Messages != 0)
+                throw new InvalidOperationException("Author purge has an inconsistent activity counter.");
+            var batch = _messages.CreateTransactionalBatch(new PartitionKey(chat));
+            batch.ReplaceItem(consent.Value.Id, consent.Value,
+                new TransactionalBatchItemRequestOptions { IfMatchEtag = consent.ETag });
+            batch.DeleteItem(id, new TransactionalBatchItemRequestOptions { IfMatchEtag = counter.Value.ETag });
+            using var response = await batch.ExecuteAsync(cancellation);
+            RequestUnits += response.RequestCharge;
+            if (response.IsSuccessStatusCode) return;
+            if (response.StatusCode is not (HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed or HttpStatusCode.NotFound))
+                throw new InvalidOperationException("Author activity purge failed; provider details withheld.");
+        }
+        throw new InvalidOperationException("Author activity purge contention exceeded its retry limit.");
+    }
+
+    public async Task CompletePurge(long chat, long user, string epoch, CancellationToken cancellation)
+    {
+        var consent = await RequirePurge(chat, user, epoch, cancellation);
+        consent.Value.Purging = false;
+        consent.Value.PurgeEpoch = null;
+        try
+        {
+            var response = await _messages.ReplaceItemAsync(consent.Value, consent.Value.Id, new PartitionKey(chat),
+                new ItemRequestOptions { IfMatchEtag = consent.ETag }, cancellation);
+            RequestUnits += response.RequestCharge;
+        }
+        catch (CosmosException error) when (error.StatusCode == HttpStatusCode.PreconditionFailed)
+        {
+            RequestUnits += error.RequestCharge;
+            throw new HistoryPurgeSupersededException();
+        }
     }
 
     public async Task DeleteChunk(long chat, string id, CancellationToken cancellation)

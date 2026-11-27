@@ -12,6 +12,7 @@ using Ungerfall.ChatGpt.TelegramBot.Abstractions;
 using Ungerfall.ChatGpt.TelegramBot.Commands;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
 using Ungerfall.ChatGpt.TelegramBot.Storage;
+using Ungerfall.ChatGpt.TelegramBot.History;
 
 namespace Ungerfall.ChatGpt.TelegramBot;
 
@@ -35,6 +36,7 @@ public class UpdateHandler
     private readonly AzureOpenAiSettings _azureOpenAi;
     private readonly PromptCatalog _prompts;
     private readonly DockingGame _dockingGame;
+    private readonly HistoryPrivacy? _historyPrivacy;
 
     public UpdateHandler(
         ITelegramBotClient botClient,
@@ -50,7 +52,7 @@ public class UpdateHandler
         ConversationPolicy conversationPolicy,
         PersonalSettings personalSettingsCommand,
         AzureOpenAiSettings azureOpenAi,
-        PromptCatalog? prompts = null)
+        PromptCatalog? prompts = null, HistoryPrivacy? historyPrivacy = null)
     {
         _botClient = botClient;
         _logger = logger;
@@ -67,11 +69,24 @@ public class UpdateHandler
         _azureOpenAi = azureOpenAi;
         _prompts = prompts ?? PromptCatalog.Load();
         _dockingGame = new DockingGame(botClient, logger);
+        _historyPrivacy = historyPrivacy;
     }
 
     public async Task Handle(Update update, CancellationToken cancellation)
     {
         _logger.LogInformation("Invoke telegram update function");
+        if (update.Message is { From: { IsBot: false } author, SenderChat: null, Text: { } command } privacyMessage
+            && _historyPrivacy?.Allows(privacyMessage.Chat.Id) == true && privacyMessage.Id > 0
+            && HistoryPrivacy.TryParseCommand(command, BotUsername, out var forget))
+        {
+            if (forget) await _historyPrivacy.Forget(privacyMessage.Chat.Id, author.Id, cancellation);
+            else await _historyPrivacy.Grant(privacyMessage.Chat.Id, author.Id, cancellation);
+            await _botClient.SendResponse(privacyMessage.Chat.Id,
+                forget ? "History consent revoked; archived originals and author metadata removed. Index cleanup may continue asynchronously. Minimal opt-out and anonymous tombstones remain to prevent re-import."
+                    : "History consent enabled for future messages. Existing opt-out tombstones are not restored.",
+                replyParameters: privacyMessage.Id, messageThreadId: privacyMessage.MessageThreadId, cancellationToken: cancellation);
+            return;
+        }
 
         var handler = update switch
         {
@@ -306,6 +321,9 @@ public class UpdateHandler
         var chatId = msg.Chat.Id;
         var decision = activateBot ? ConversationDecision.Continuation : otherBotCommand ? ConversationDecision.Ignore
             : await _conversationPolicy.Decide(msg, receipt, cancellation);
+        if (!activateBot && decision != ConversationDecision.Ignore
+            && !await _conversationPolicy.CanUseDecisionContext(chatId, receipt, cancellation))
+            decision = ConversationDecision.Ignore;
         if (decision == ConversationDecision.Ignore)
         {
             _logger.LogInformation("Bot action is not expected");
@@ -323,7 +341,7 @@ public class UpdateHandler
             !activateBot ? receipt.DecisionInput : null, autonomous: autonomous, silentOnFailure: !activateBot,
             messageThreadId: msg.MessageThreadId,
             storageContext: !autonomous && msg.From != null
-                ? new StorageContext(chatId, msg.From.Id, msg.Id, messageText) : null);
+                ? new StorageContext(chatId, msg.From.Id, msg.Id, messageText, msg.MessageThreadId) : null);
         if (!activateBot && (string.IsNullOrWhiteSpace(chatGptResponse)
             || autonomous && !await _conversationPolicy.TryMarkInterjection(msg, cancellation)))
         {

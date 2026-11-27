@@ -11,12 +11,43 @@ if (args.SequenceEqual(["--verify-client"]))
 }
 if (options.Chats.Count != 1) throw new InvalidOperationException("The importer requires one explicitly configured target chat.");
 var chat = options.Chats.Single();
+if (args.SequenceEqual(new[] { "--verify-telegram" }))
+{
+    await TelegramVerification.Run(chat);
+    return;
+}
 var file = Environment.GetEnvironmentVariable("HISTORY_EXPORT")
     ?? throw new InvalidOperationException("Set HISTORY_EXPORT privately to the local ZIP path.");
 var dry = args.Contains("--dry-run");
 if (!dry && !args.Contains("--confirm-consent"))
     throw new InvalidOperationException("Import requires explicit chat-scoped consent confirmation.");
 using var stream = File.OpenRead(file);
+if (args.Contains("--seed-consent"))
+{
+    if (!args.Contains("--confirm-consent")) throw new InvalidOperationException("Consent seeding requires explicit confirmation.");
+    using var seedReader = new TelegramHistoryExport(stream);
+    var authors = new HashSet<long>();
+    while (seedReader.ReadNext(out var entry))
+    {
+        if (seedReader.ChatId != chat) throw new InvalidOperationException("Export chat differs from configured target.");
+        var message = TelegramHistoryExport.Message(entry, chat);
+        if (message?.UserId is > 0) authors.Add(message.UserId.Value);
+    }
+    using var seedClient = new CosmosClient(Environment.GetEnvironmentVariable("CosmosDbConnectionString"),
+        new CosmosClientOptions { Serializer = new HistoryCosmosSerializer(), ConnectionMode = ConnectionMode.Gateway });
+    var seedRepository = new HistoryRepository(seedClient, Environment.GetEnvironmentVariable("CosmosDatabase")!, options);
+    using var seedTimeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+    try
+    {
+        foreach (var author in authors) await seedRepository.EnsureImportConsent(chat, author, seedTimeout.Token);
+    }
+    catch (CosmosException error)
+    {
+        throw new InvalidOperationException($"Consent seeding failed: HTTP {(int)error.StatusCode}; provider details withheld.");
+    }
+    Console.WriteLine($"Known export authors checked for current consent: {authors.Count}; explicit revocations preserved. Source text/identities omitted.");
+    return;
+}
 var hash = Convert.ToHexString(SHA256.HashData(stream));
 stream.Position = 0;
 using var reader = new TelegramHistoryExport(stream);
@@ -51,6 +82,10 @@ var consented = new Dictionary<long, bool>();
 var previousRu = manifest.ObservedRu;
 long tokens = 0, characters = 0;
 var count = 0;
+var maximum = args.FirstOrDefault(value => value.StartsWith("--max-messages=", StringComparison.Ordinal));
+var maximumMessages = maximum == null ? int.MaxValue : int.Parse(maximum.Split('=')[1], System.Globalization.CultureInfo.InvariantCulture);
+if (maximumMessages <= 0) throw new ArgumentException("Import message limit must be positive.");
+var limited = false;
 async Task Flush()
 {
     if (repository == null || batch.Count == 0) return;
@@ -96,18 +131,19 @@ try
             batch.Add(message);
             if (batch.Count == 16) await Flush();
         }
+        if (count >= maximumMessages) { limited = true; break; }
     }
     if (reader.ChatId != chat) throw new InvalidOperationException("Export chat differs from the configured target.");
     await Flush();
     if (repository != null)
     {
         manifest.ProcessedEntries = reader.EntriesRead;
-        manifest.Completed = true;
+        manifest.Completed = !limited;
         manifest.ObservedRu = previousRu + repository.RequestUnits;
         manifest.LeaseUntilUtc = DateTime.UtcNow.AddMinutes(3);
         await repository.SaveImport(manifest, timeout.Token);
     }
-    Console.WriteLine($"History {(dry ? "dry run" : "source import")} complete: messages={count}; characters={characters}; sourceTokens={tokens}; observedRU={repository?.RequestUnits ?? 0:F2}. Source text/identities omitted.");
+    Console.WriteLine($"History {(dry ? "dry run" : "source import")} {(limited ? "checkpoint" : "complete")}: messages={count}; characters={characters}; sourceTokens={tokens}; observedRU={repository?.RequestUnits ?? 0:F2}. Source text/identities omitted.");
 }
 catch (CosmosException error)
 {

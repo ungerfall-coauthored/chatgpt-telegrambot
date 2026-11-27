@@ -85,6 +85,14 @@ namespace Ungerfall.ChatGpt.TelegramBot.AzureFunction
                    s.AddScoped(sp => new HistoryRepository(sp.GetRequiredKeyedService<CosmosClient>("history"),
                        sp.GetRequiredService<IOptions<CosmosDbOptions>>().Value.DatabaseId,
                        sp.GetRequiredService<HistoryOptions>()));
+                   s.AddScoped<IHistoryConsent>(sp => sp.GetRequiredService<HistoryRepository>());
+                   s.AddScoped<HistoryCapture>();
+                   s.AddScoped<HistoryPrivacy>();
+                   s.AddSingleton<ArchiveEmbeddingClient>();
+                   s.AddScoped<HistoryIndexer>();
+                   s.AddSingleton(sp => new HistoryTools(sp.GetRequiredKeyedService<CosmosClient>("history"),
+                       sp.GetRequiredService<IOptions<CosmosDbOptions>>().Value.DatabaseId,
+                       sp.GetRequiredService<HistoryOptions>(), sp.GetRequiredService<ArchiveEmbeddingClient>()));
                    s.AddScoped<IConversationRepository, ConversationRepository>();
                    s.AddScoped<ConversationPolicy>();
                    s.AddSingleton<ConversationPolicyChats>();

@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
+using Ungerfall.ChatGpt.TelegramBot.History;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Database;
 public class TelegramMessageRepository : ITelegramMessageRepository
@@ -15,20 +16,23 @@ public class TelegramMessageRepository : ITelegramMessageRepository
     private readonly CosmosDbOptions _options;
     private readonly ILogger<TelegramMessageRepository> _logger;
     private readonly int _messageTtlSeconds;
+    private readonly HistoryRepository? _history;
 
     public TelegramMessageRepository(
         CosmosClient cosmos,
         IOptions<CosmosDbOptions> options,
-        ILogger<TelegramMessageRepository> logger)
+        ILogger<TelegramMessageRepository> logger, HistoryRepository? history = null)
     {
         _cosmos = cosmos;
         _options = options.Value;
         _messageTtlSeconds = _options.MessageTtlSeconds;
         _logger = logger;
+        _history = history;
     }
 
     public async Task Create(TelegramMessage message, CancellationToken cancellation)
     {
+        if (_history != null && await _history.IsRevoked(message.ChatId, message.UserId, cancellation)) return;
         var container = _cosmos.GetContainer(_options.DatabaseId, _options.MessagesContainerId);
         var date = DateTime.UtcNow.ToString(TelegramMessage.DATE_UTC_FORMAT);
         await container.UpsertItemAsync(
@@ -71,6 +75,7 @@ public class TelegramMessageRepository : ITelegramMessageRepository
             foreach (TelegramMessage item in response)
             {
                 cancellation.ThrowIfCancellationRequested();
+                if (_history != null && await _history.IsRevoked(chatId, item.UserId, cancellation)) continue;
                 yield return item;
             }
 
@@ -98,6 +103,7 @@ public class TelegramMessageRepository : ITelegramMessageRepository
             foreach (TelegramMessage item in response)
             {
                 cancellation.ThrowIfCancellationRequested();
+                if (_history != null && await _history.IsRevoked(chatId, item.UserId, cancellation)) continue;
                 yield return item;
             }
 
