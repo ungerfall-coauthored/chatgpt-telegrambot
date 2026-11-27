@@ -149,6 +149,13 @@ public class DurableHistoryLiveTests
             await capture.Capture(new Telegram.Bot.Types.Update { Id = 3001, Message = source }, timeout.Token);
             var captured = (await repository.GetMessage(-1, "message:-1:2001", timeout.Token))!;
             Assert.Equal(source.Text, captured.Text);
+            var anonymous = new Telegram.Bot.Types.Message
+            {
+                Id = 2002, Chat = source.Chat, From = source.From, Date = source.Date, Text = "Synthetic anonymous sender",
+                SenderChat = new Telegram.Bot.Types.Chat { Id = -9 },
+            };
+            await capture.Capture(new Telegram.Bot.Types.Update { Id = 3003, Message = anonymous }, timeout.Token);
+            Assert.Null(await repository.GetMessage(-1, "message:-1:2002", timeout.Token));
             var pending = (await repository.GetWork(-1, captured.Bucket, timeout.Token))!;
             var indexer = new HistoryIndexer(repository, options, new ArchiveEmbeddingClient());
             await indexer.Index(new(-1, pending.Id, pending.Version), timeout.Token);
@@ -211,14 +218,19 @@ public class DurableHistoryLiveTests
             Assert.Contains("green telescope", search.ToJson());
             var settings = Ungerfall.ChatGpt.TelegramBot.Configuration.AzureOpenAiSettings.FromEnvironment();
             var ai = settings.CreateChatCompletionClient(settings.ChatDeployment, historyTools: tools);
-            var histogram = await ai.CompleteAsync(new ChatCompletionRequest(
+            var histogramRequest = settings.Chat.CreateRequest(
                 new[] { ChatMessage.FromSystem("Use exact history tools; do not guess counts."),
                     ChatMessage.FromUser("Use history_activity for Telegram user 42. Draw a yearly ASCII activity histogram for every available year. Include each exact count.") },
-                settings.ChatDeployment, null, 2000, null, reader, InputTokenLimit: 32768, ToolOutputTokenLimit: 4000), timeout.Token);
-            Assert.True(histogram.Successful, "Actual history tool conversation did not finish.");
+                settings.ChatDeployment) with { StorageContext = reader };
+            var histogram = await ai.CompleteAsync(histogramRequest, timeout.Token);
+            Assert.True(histogram.Successful, $"Actual history tool conversation did not finish: {histogram.ErrorType}.");
             Assert.Contains("2024", histogram.Content);
             Assert.Contains("2025", histogram.Content);
             Assert.Contains("15", histogram.Content);
+            var oldGeneration = await repository.GetContextGeneration(-1, 42, timeout.Token);
+            Assert.True(await repository.IsContextAllowed(-1, 42, oldGeneration, timeout.Token));
+            await repository.SetConsent(-1, 42, false, timeout.Token, purging: true);
+            var oldEpoch = (await repository.GetPurgeEpoch(-1, 42, timeout.Token))!;
             await new HistoryPrivacy(repository, options).Forget(-1, 42, timeout.Token);
             Assert.False(await repository.HasConsent(-1, 42, timeout.Token));
             Assert.Equal("forbidden", (await tools.Execute("history_activity", """{"userId":42}""", reader, timeout.Token)).Code);
@@ -227,6 +239,41 @@ public class DurableHistoryLiveTests
             Assert.Null(forgotten.UserId);
             Assert.Equal("", forgotten.Text);
             Assert.Equal("", forgotten.User);
+            await repository.SetConsent(-1, 42, true, timeout.Token);
+            Assert.False(await repository.IsContextAllowed(-1, 42, oldGeneration, timeout.Token));
+            Assert.False(await repository.IsContextAllowed(-1, 42, null, timeout.Token));
+            Assert.True(await repository.IsContextAllowed(-1, 42,
+                await repository.GetContextGeneration(-1, 42, timeout.Token), timeout.Token));
+            source.Id = 2004;
+            source.Text = "Synthetic message after renewed consent";
+            source.Photo = null;
+            source.Caption = null;
+            await capture.Capture(new Telegram.Bot.Types.Update { Id = 3004, Message = source }, timeout.Token);
+            var staleTombstone = (await repository.GetMessage(-1, "message:-1:2004", timeout.Token))!;
+            staleTombstone.Deleted = true;
+            staleTombstone.Consented = false;
+            staleTombstone.UserId = null;
+            staleTombstone.User = "";
+            staleTombstone.Text = "";
+            await Assert.ThrowsAsync<HistoryPurgeSupersededException>(() =>
+                repository.SaveBatch([staleTombstone], timeout.Token, purge: (42, oldEpoch)));
+            await Assert.ThrowsAsync<HistoryPurgeSupersededException>(() =>
+                repository.CompletePurge(-1, 42, oldEpoch, timeout.Token));
+            await new HistoryPrivacy(repository, options).ResumeForget(-1, 42, timeout.Token);
+            Assert.True(await repository.HasConsent(-1, 42, timeout.Token));
+            Assert.Equal(source.Text, (await repository.GetMessage(-1, "message:-1:2004", timeout.Token))!.Text);
+            await repository.SetConsent(-1, 42, false, timeout.Token, purging: true);
+            Assert.NotEqual(oldEpoch, await repository.GetPurgeEpoch(-1, 42, timeout.Token));
+            await Assert.ThrowsAsync<HistoryPurgeSupersededException>(() =>
+                repository.SaveBatch([staleTombstone], timeout.Token, purge: (42, oldEpoch)));
+            await Assert.ThrowsAsync<HistoryPurgeSupersededException>(() =>
+                repository.CompletePurge(-1, 42, oldEpoch, timeout.Token));
+            Assert.Equal(source.Text, (await repository.GetMessage(-1, "message:-1:2004", timeout.Token))!.Text);
+            await Task.WhenAll(
+                new HistoryPrivacy(repository, options).ResumeForget(-1, 42, timeout.Token),
+                new HistoryPrivacy(new HistoryRepository(client, database.Id, options), options).ResumeForget(-1, 42, timeout.Token));
+            Assert.False(await repository.HasConsent(-1, 42, timeout.Token));
+            Assert.True((await repository.GetMessage(-1, "message:-1:2004", timeout.Token))!.Deleted);
         }
         catch (CosmosException error)
         {

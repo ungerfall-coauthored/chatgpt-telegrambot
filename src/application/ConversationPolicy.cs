@@ -13,6 +13,8 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
+using Ungerfall.ChatGpt.TelegramBot.Database;
+using Ungerfall.ChatGpt.TelegramBot.History;
 
 namespace Ungerfall.ChatGpt.TelegramBot;
 public class ConversationPolicy
@@ -24,14 +26,43 @@ public class ConversationPolicy
     private readonly ConversationPolicyChats _chats;
     private readonly ILogger<ConversationPolicy> _logger;
     private readonly DecisionsClient _decisions;
+    private readonly IHistoryConsent? _history;
 
     public ConversationPolicy(
-        IConversationRepository repository, ConversationPolicyChats chats, ILogger<ConversationPolicy> logger, DecisionsClient decisions)
+        IConversationRepository repository, ConversationPolicyChats chats, ILogger<ConversationPolicy> logger, DecisionsClient decisions,
+        IHistoryConsent? history = null)
     {
         _repository = repository;
         _chats = chats;
         _logger = logger;
         _decisions = decisions;
+        _history = history;
+    }
+
+    private async Task<bool> IsRevoked(long chat, long user, CancellationToken cancellation) =>
+        _history != null && await _history.IsRevoked(chat, user, cancellation);
+
+    private async Task FilterRevoked(ConversationState state, CancellationToken cancellation)
+    {
+        if (_history?.Allows(state.ChatId) != true) return;
+        foreach (var item in state.Context.Where(entry => !entry.IsBot)
+            .Select(entry => (entry.UserId, entry.ConsentGeneration)).Distinct().ToArray())
+            if (!await _history.IsContextAllowed(state.ChatId, item.UserId, item.ConsentGeneration, cancellation))
+                state.Context.RemoveAll(entry => !entry.IsBot && entry.UserId == item.UserId
+                    && entry.ConsentGeneration == item.ConsentGeneration);
+    }
+
+    public async Task<bool> CanUseDecisionContext(long chat, ConversationReceipt receipt, CancellationToken cancellation)
+    {
+        if (_history?.Allows(chat) != true) return true;
+        if (receipt.DecisionParticipants == null)
+            return !await _history.HasRevocations(chat, cancellation);
+        if (receipt.DecisionGenerations != null && receipt.DecisionGenerations.Length != receipt.DecisionParticipants.Length)
+            return false;
+        for (var index = 0; index < receipt.DecisionParticipants.Length; index++)
+            if (!await _history.IsContextAllowed(chat, receipt.DecisionParticipants[index],
+                    receipt.DecisionGenerations?[index], cancellation)) return false;
+        return true;
     }
 
     public async Task<ConversationDecision> Decide(Message message, Database.ConversationReceipt receipt, CancellationToken cancellation)
@@ -47,12 +78,14 @@ public class ConversationPolicy
             || message.Text?.Length > 512
             || message.Entities?.Any(x => x.Type is MessageEntityType.Mention or MessageEntityType.TextMention) == true)
             return ConversationDecision.Ignore;
+        if (await IsRevoked(message.Chat.Id, message.From.Id, cancellation)) return ConversationDecision.Ignore;
         var now = DateTime.UtcNow;
         if (message.Date < now.AddMinutes(-2) || message.Date > now.AddSeconds(10)) return ConversationDecision.Ignore;
         if (receipt.DecisionAttempted)
         {
             var cached = receipt.Decision;
-            if (string.IsNullOrWhiteSpace(receipt.DecisionInput) || receipt.DecisionInput.Length > 16384
+            if (!await CanUseDecisionContext(message.Chat.Id, receipt, cancellation)
+                || string.IsNullOrWhiteSpace(receipt.DecisionInput) || receipt.DecisionInput.Length > 16384
                 || cached == ConversationDecision.Continuation && !options.ContinuationEnabled
                 || cached == ConversationDecision.NaturalRequest && !options.NaturalRequestsEnabled
                 || cached == ConversationDecision.Interjection && !options.AutonomousEnabled)
@@ -65,6 +98,7 @@ public class ConversationPolicy
         for (var attempt = 0; attempt < 3; attempt++)
         {
             var state = await _repository.Get(message.Chat.Id, message.MessageThreadId ?? 0, cancellation);
+            await FilterRevoked(state, cancellation);
             var continuation = !naturalRequest && options.ContinuationEnabled && !state.AutonomousPending
                 && state.UserId == message.From.Id && state.ExpiresUtc > now && state.RemainingCandidates > 0;
             var interjection = !continuation && !naturalRequest;
@@ -105,11 +139,27 @@ public class ConversationPolicy
                     .Select(x => new { speaker = x.IsBot ? "bot" : x.UserId == message.From.Id ? "current_user" : "other_user", text = Truncate(x.Text) }).ToArray(),
                 latest = Truncate(message.Text ?? string.Empty),
             }, new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+            var participants = state.Context.Where(x => !x.IsBot && x.DateUtc >= now.AddMinutes(-2)
+                    && x.MessageId != message.Id).TakeLast(4)
+                .Select(x => (x.UserId, x.ConsentGeneration))
+                .Append((message.From.Id, _history == null ? null
+                    : await _history.GetContextGeneration(message.Chat.Id, message.From.Id, cancellation)))
+                .Distinct().ToArray();
+            receipt.DecisionParticipants = participants.Select(item => item.Item1).ToArray();
+            receipt.DecisionGenerations = participants.Select(item => item.Item2).ToArray();
             if (!await _repository.ReserveDecision(receipt, state, budget, cancellation)) continue;
 
+            if (!await CanUseDecisionContext(message.Chat.Id, receipt, cancellation))
+                return ConversationDecision.Ignore;
             var approved = naturalRequest && !continuation
                 ? await _decisions.ShouldAnswerRequest(receipt.DecisionInput, options.MinProbability, cancellation)
                 : await _decisions.ShouldReply(receipt.DecisionInput, interjection, options.MinProbability, cancellation);
+            if (!await CanUseDecisionContext(message.Chat.Id, receipt, cancellation))
+            {
+                receipt.Decision = ConversationDecision.Ignore;
+                await _repository.SaveReceipt(receipt, cancellation);
+                return ConversationDecision.Ignore;
+            }
             receipt.Decision = !approved ? ConversationDecision.Ignore
                 : continuation ? ConversationDecision.Continuation
                 : naturalRequest ? ConversationDecision.NaturalRequest : ConversationDecision.Interjection;
@@ -154,7 +204,13 @@ public class ConversationPolicy
         for (var attempt = 0; attempt < 3; attempt++)
         {
             var state = await _repository.Get(message.Chat.Id, message.MessageThreadId ?? 0, cancellation);
+            await FilterRevoked(state, cancellation);
             var userId = message.From?.Id ?? 0;
+            if (await IsRevoked(message.Chat.Id, userId, cancellation))
+            {
+                if (await _repository.Save(state, cancellation)) return;
+                continue;
+            }
             if (reply != null && state.ExpiresUtc <= message.Date) state.Context.Clear();
             state.Context.RemoveAll(x => x.MessageId == message.Id);
             state.Context.Add(new Database.ConversationEntry
@@ -163,6 +219,8 @@ public class ConversationPolicy
                 UserId = userId,
                 Text = Truncate(message.Text ?? string.Empty),
                 DateUtc = message.Date,
+                ConsentGeneration = _history == null ? null
+                    : await _history.GetContextGeneration(message.Chat.Id, userId, cancellation),
             });
             if (state.Context.Count > 4) state.Context.RemoveRange(0, state.Context.Count - 4);
 

@@ -28,6 +28,7 @@ public class ConversationEntry
     public string Text { get; set; } = string.Empty;
     public bool IsBot { get; set; }
     public DateTime DateUtc { get; set; }
+    public string? ConsentGeneration { get; set; }
 }
 
 public class ConversationReceipt
@@ -45,6 +46,8 @@ public class ConversationReceipt
     public bool DecisionAttempted { get; set; }
     public ConversationDecision Decision { get; set; }
     public string? DecisionInput { get; set; }
+    public long[]? DecisionParticipants { get; set; }
+    public string?[]? DecisionGenerations { get; set; }
 
     [JsonIgnore]
     public string? ETag { get; set; }

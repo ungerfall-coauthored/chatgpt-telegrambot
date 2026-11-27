@@ -81,6 +81,9 @@ public sealed class HistoryConsent
     public bool Granted { get; set; }
     public DateTime ChangedUtc { get; set; }
     public bool Purging { get; set; }
+    public string? PurgeEpoch { get; set; }
+    public string? Generation { get; set; }
+    public bool WasRevoked { get; set; }
 }
 
 public sealed class HistoryImport

@@ -53,10 +53,33 @@ internal static class ClientVerification
                 context, cancellation.Token);
             if (count.Status != "ok")
                 throw new InvalidOperationException("Production Cosmos SDK history query failed.");
-            await new HistoryPrivacy(repository, options).Forget(chat, 42, cancellation.Token);
+            var oldGeneration = await repository.GetContextGeneration(chat, 42, cancellation.Token);
+            await repository.SetConsent(chat, 42, false, cancellation.Token, purging: true);
+            var epoch = (await repository.GetPurgeEpoch(chat, 42, cancellation.Token))!;
+            var privacy = new HistoryPrivacy(repository, options);
+            await privacy.Forget(chat, 42, cancellation.Token);
             if ((await repository.GetMessage(chat, original.Id, cancellation.Token))?.UserId != null)
                 throw new InvalidOperationException("Production Cosmos SDK author purge failed.");
-            Console.WriteLine($"Actual application Cosmos SDK {typeof(CosmosClient).Assembly.GetName().Version}: source roundtrip, vector SQL, embedding/index activation, history query and purge passed.");
+            await repository.SetConsent(chat, 42, true, cancellation.Token);
+            if (await repository.IsContextAllowed(chat, 42, oldGeneration, cancellation.Token))
+                throw new InvalidOperationException("Production Cosmos SDK stale context generation remained visible.");
+            var later = new HistoryMessage
+            {
+                ChatId = chat, SourceChatId = chat, MessageId = -2, Origin = "export",
+                Date = original.Date, Text = "Synthetic later fixture", Consented = true, UserId = 42, User = "Synthetic",
+            };
+            await repository.SaveMessage(later, cancellation.Token);
+            await privacy.ResumeForget(chat, 42, cancellation.Token);
+            if (!await repository.HasConsent(chat, 42, cancellation.Token)
+                || (await repository.GetMessage(chat, later.Id, cancellation.Token))?.Text != later.Text)
+                throw new InvalidOperationException("Production Cosmos SDK stale purge changed renewed consent.");
+            try
+            {
+                await repository.CompletePurge(chat, 42, epoch, cancellation.Token);
+                throw new InvalidOperationException("Production Cosmos SDK stale purge completion was accepted.");
+            }
+            catch (HistoryPurgeSupersededException) { }
+            Console.WriteLine($"Actual application Cosmos SDK {typeof(CosmosClient).Assembly.GetName().Version}: source roundtrip, vector SQL, embedding/index activation, history query, purge and stale generation fencing passed.");
         }
         catch (CosmosException error)
         {

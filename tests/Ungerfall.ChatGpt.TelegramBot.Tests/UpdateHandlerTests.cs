@@ -7,11 +7,24 @@ using Ungerfall.ChatGpt.TelegramBot.Abstractions;
 using Ungerfall.ChatGpt.TelegramBot.Commands;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
 using Ungerfall.ChatGpt.TelegramBot.Database;
+using Ungerfall.ChatGpt.TelegramBot.History;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Tests;
 
 public class UpdateHandlerTest
 {
+    [Theory]
+    [InlineData("/historyforget", true, true)]
+    [InlineData(" /HISTORYFORGET@MyBot ", true, true)]
+    [InlineData("/HISTORYCONSENT@MYBOT", true, false)]
+    [InlineData("/historyforget@OtherBot", false, false)]
+    [InlineData("/historyforget please", false, false)]
+    public void PrivacyCommandsSelectOnlyOwnBotAndCorrectAction(string text, bool recognized, bool expectedForget)
+    {
+        Assert.Equal(recognized, HistoryPrivacy.TryParseCommand(text, "@mybot", out var forget));
+        Assert.Equal(expectedForget, forget);
+    }
+
     [Fact]
     public async Task Handle_ShouldAwaitHistoryAndPropagateError_WhenDatabaseWriteFails()
     {

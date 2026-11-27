@@ -127,8 +127,10 @@ their release gates.
 
 When enabled for `HistoryChats`, authenticated incoming originals and edits are
 archived before normal reply handling. Only known consenting nonbot authors are
-captured; newcomers use `/historyconsent`. Callbacks, ephemeral IDs and bot
-messages are excluded. Full captions and metadata-only activity remain canonical.
+captured; newcomers use `/historyconsent`. Callbacks, ephemeral IDs, bot messages
+and messages sent on behalf of a chat (including anonymous administrators) are
+excluded because their individual author is not verified. Full captions and
+metadata-only activity remain canonical.
 Embeddings never run on the reply path.
 
 `DispatchHistory` leases pending hour/topic work and sends references to the
@@ -158,6 +160,10 @@ retrieval for unsolicited replies.
 `/historyforget` revokes the requesting author's consent and resumably purges
 their archived originals, author counters and affected vectors. Recent rolling
 originals are removed and future rolling reads/writes suppress revoked authors.
+Conversation-policy context and cached decision inputs are checked against the
+author's current consent generation; old entries cannot reappear after renewed
+consent. Entries and receipts retain their existing TTLs. Purge source/counter
+updates and completion are fenced by the active purge epoch.
 Minimal opt-out records and anonymous source tombstones remain to prevent
 backfill resurrection. Index cleanup may continue asynchronously. New consent
 does not restore tombstones. Copies already sent to Telegram or AI providers

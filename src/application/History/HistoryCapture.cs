@@ -11,7 +11,7 @@ public sealed class HistoryCapture(HistoryRepository repository, HistoryOptions 
     {
         var before = repository.RequestUnits;
         var source = update.Message ?? update.EditedMessage;
-        if (source == null || !options.Allows(source.Chat.Id) || source.Id <= 0
+        if (source == null || !options.Allows(source.Chat.Id) || source.Id <= 0 || source.SenderChat != null
             || source.From is not { IsBot: false } author)
             return;
         var type = source.Type.ToString().ToLowerInvariant();

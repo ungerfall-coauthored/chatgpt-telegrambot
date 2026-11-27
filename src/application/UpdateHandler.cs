@@ -75,13 +75,10 @@ public class UpdateHandler
     public async Task Handle(Update update, CancellationToken cancellation)
     {
         _logger.LogInformation("Invoke telegram update function");
-        if (update.Message is { From: { IsBot: false } author, Text: { } command } privacyMessage
+        if (update.Message is { From: { IsBot: false } author, SenderChat: null, Text: { } command } privacyMessage
             && _historyPrivacy?.Allows(privacyMessage.Chat.Id) == true && privacyMessage.Id > 0
-            && (command.Trim() is "/historyconsent" or "/historyforget"
-                || command.Trim().Equals("/historyconsent" + BotUsername, StringComparison.OrdinalIgnoreCase)
-                || command.Trim().Equals("/historyforget" + BotUsername, StringComparison.OrdinalIgnoreCase)))
+            && HistoryPrivacy.TryParseCommand(command, BotUsername, out var forget))
         {
-            var forget = command.Trim().Split('@')[0] == "/historyforget";
             if (forget) await _historyPrivacy.Forget(privacyMessage.Chat.Id, author.Id, cancellation);
             else await _historyPrivacy.Grant(privacyMessage.Chat.Id, author.Id, cancellation);
             await _botClient.SendResponse(privacyMessage.Chat.Id,
@@ -324,6 +321,9 @@ public class UpdateHandler
         var chatId = msg.Chat.Id;
         var decision = activateBot ? ConversationDecision.Continuation : otherBotCommand ? ConversationDecision.Ignore
             : await _conversationPolicy.Decide(msg, receipt, cancellation);
+        if (!activateBot && decision != ConversationDecision.Ignore
+            && !await _conversationPolicy.CanUseDecisionContext(chatId, receipt, cancellation))
+            decision = ConversationDecision.Ignore;
         if (decision == ConversationDecision.Ignore)
         {
             _logger.LogInformation("Bot action is not expected");

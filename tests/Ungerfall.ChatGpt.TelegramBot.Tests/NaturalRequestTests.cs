@@ -11,6 +11,7 @@ using Ungerfall.ChatGpt.TelegramBot.Abstractions;
 using Ungerfall.ChatGpt.TelegramBot.Commands;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
 using Ungerfall.ChatGpt.TelegramBot.Database;
+using Ungerfall.ChatGpt.TelegramBot.History;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Tests;
 
@@ -20,6 +21,95 @@ public sealed class ConversationPolicyCollection { }
 [Collection("Conversation policy environment")]
 public class NaturalRequestTests
 {
+    [Fact]
+    public async Task RevokedAuthorIsExcludedFromDecisionContextAndFutureObservation()
+    {
+        var revoked = false;
+        var consent = Substitute.For<IHistoryConsent>();
+        consent.Allows(123).Returns(true);
+        consent.IsRevoked(123, 2, Arg.Any<CancellationToken>()).Returns(_ => revoked);
+        consent.IsContextAllowed(123, 1, Arg.Any<string?>(), Arg.Any<CancellationToken>()).Returns(true);
+        consent.IsContextAllowed(123, 2, Arg.Any<string?>(), Arg.Any<CancellationToken>()).Returns(_ => !revoked);
+        var transport = new DecisionTransport(.99);
+        using var http = new HttpClient(transport);
+        using var scenario = new NaturalRequestScenario(new DecisionsClient(http, NullLogger<DecisionsClient>.Instance,
+            new AzureDecisionsSettings("https://example.services.ai.azure.com/", "test-key", "decisions")), history: consent);
+        await scenario.Handler.Handle(scenario.Update(1, NaturalRequestScenario.FoodQuestion), default);
+        await scenario.Handler.Handle(scenario.Update(2, NaturalRequestScenario.HumanSuggestion), default);
+        revoked = true;
+        await scenario.Handler.Handle(scenario.Update(3, NaturalRequestScenario.BotRequest), default);
+        using var request = JsonDocument.Parse(transport.Body!);
+        var state = request.RootElement.GetProperty("state").GetString()!;
+        Assert.DoesNotContain(NaturalRequestScenario.HumanSuggestion, state);
+        Assert.Contains(NaturalRequestScenario.FoodQuestion, state);
+        Assert.DoesNotContain(scenario.State.Context, entry => entry.UserId == 2);
+        await scenario.Handler.Handle(scenario.Update(2, "revoked private context"), default);
+        Assert.DoesNotContain(scenario.State.Context, entry => entry.UserId == 2);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CachedDecisionWithRevokedOrUnknownProvenanceIsNotReused(bool hasProvenance)
+    {
+        var consent = Substitute.For<IHistoryConsent>();
+        consent.Allows(123).Returns(true);
+        consent.IsRevoked(123, 2, Arg.Any<CancellationToken>()).Returns(true);
+        consent.IsContextAllowed(123, 1, Arg.Any<string?>(), Arg.Any<CancellationToken>()).Returns(true);
+        consent.HasRevocations(123, Arg.Any<CancellationToken>()).Returns(true);
+        var transport = new DecisionTransport(.99);
+        using var http = new HttpClient(transport);
+        using var scenario = new NaturalRequestScenario(new DecisionsClient(http, NullLogger<DecisionsClient>.Instance,
+            new AzureDecisionsSettings("https://example.services.ai.azure.com/", "test-key", "decisions")), history: consent);
+        var receipt = new ConversationReceipt
+        {
+            DecisionAttempted = true, Decision = ConversationDecision.NaturalRequest,
+            DecisionInput = "cached input", DecisionParticipants = hasProvenance ? [1, 2] : null,
+        };
+        Assert.Equal(ConversationDecision.Ignore, await scenario.Policy.Decide(scenario.Update(3, NaturalRequestScenario.BotRequest).Message!, receipt, default));
+        Assert.Equal(0, transport.Calls);
+    }
+
+    [Fact]
+    public async Task ReconsentDoesNotRestoreEarlierConversationContext()
+    {
+        var generation = "before";
+        var consent = Substitute.For<IHistoryConsent>();
+        consent.Allows(123).Returns(true);
+        consent.GetContextGeneration(123, 2, Arg.Any<CancellationToken>()).Returns(_ => generation);
+        consent.IsContextAllowed(123, 1, Arg.Any<string?>(), Arg.Any<CancellationToken>()).Returns(true);
+        consent.IsContextAllowed(123, 2, Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(call => call.ArgAt<string?>(2) == generation);
+        var transport = new DecisionTransport(.99);
+        using var http = new HttpClient(transport);
+        using var scenario = new NaturalRequestScenario(new DecisionsClient(http, NullLogger<DecisionsClient>.Instance,
+            new AzureDecisionsSettings("https://example.services.ai.azure.com/", "test-key", "decisions")), history: consent);
+        await scenario.Handler.Handle(scenario.Update(2, NaturalRequestScenario.HumanSuggestion), default);
+        generation = "after";
+        await scenario.Handler.Handle(scenario.Update(3, NaturalRequestScenario.BotRequest), default);
+        using var request = JsonDocument.Parse(transport.Body!);
+        Assert.DoesNotContain(NaturalRequestScenario.HumanSuggestion, request.RootElement.GetProperty("state").GetString());
+    }
+
+    [Fact]
+    public async Task RevocationDuringDecisionPreventsSubsequentReply()
+    {
+        var revoked = false;
+        var consent = Substitute.For<IHistoryConsent>();
+        consent.Allows(123).Returns(true);
+        consent.IsRevoked(123, 2, Arg.Any<CancellationToken>()).Returns(_ => revoked);
+        consent.IsContextAllowed(123, 1, Arg.Any<string?>(), Arg.Any<CancellationToken>()).Returns(true);
+        consent.IsContextAllowed(123, 2, Arg.Any<string?>(), Arg.Any<CancellationToken>()).Returns(_ => !revoked);
+        var transport = new DecisionTransport(.99, () => revoked = true);
+        using var http = new HttpClient(transport);
+        using var scenario = new NaturalRequestScenario(new DecisionsClient(http, NullLogger<DecisionsClient>.Instance,
+            new AzureDecisionsSettings("https://example.services.ai.azure.com/", "test-key", "decisions")), history: consent);
+        await scenario.Handler.Handle(scenario.Update(2, NaturalRequestScenario.HumanSuggestion), default);
+        await scenario.Handler.Handle(scenario.Update(3, NaturalRequestScenario.BotRequest), default);
+        Assert.Equal(1, transport.Calls);
+        await scenario.AssertNoReply();
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -99,7 +189,7 @@ public class NaturalRequestTests
         await scenario.Bot.DidNotReceive().SendRequest<Message>(Arg.Any<SendRichMessageRequest>(), Arg.Any<CancellationToken>());
     }
 
-    private sealed class DecisionTransport(double probability) : HttpMessageHandler
+    private sealed class DecisionTransport(double probability, Action? onCall = null) : HttpMessageHandler
     {
         public int Calls { get; private set; }
         public string? Body { get; private set; }
@@ -108,6 +198,7 @@ public class NaturalRequestTests
         {
             Calls++;
             Body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            onCall?.Invoke();
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(JsonSerializer.Serialize(new
@@ -131,10 +222,11 @@ internal sealed class NaturalRequestScenario : IDisposable
     public ConversationState State { get; }
     public ConversationBudget Budget { get; }
     public UpdateHandler Handler { get; }
+    public ConversationPolicy Policy { get; }
 
     public NaturalRequestScenario(DecisionsClient decisions, ConversationPolicyOptions? options = null,
         IChatCompletionClient? completion = null, AzureOpenAiSettings? azureSettings = null, string? systemPrompt = null,
-        ITelegramBotClient? bot = null, long chatId = 123)
+        ITelegramBotClient? bot = null, long chatId = 123, IHistoryConsent? history = null)
     {
         ChatId = chatId;
         Bot = bot ?? Substitute.For<ITelegramBotClient>();
@@ -176,12 +268,13 @@ internal sealed class NaturalRequestScenario : IDisposable
                 From = new User { Id = 999, FirstName = "Bot", IsBot = true, Username = "chatgpt_ungerfall_bot" },
             });
         var azure = azureSettings ?? TestAzureSettings.Create();
+        Policy = new ConversationPolicy(repository, new ConversationPolicyChats(), NullLogger<ConversationPolicy>.Instance, decisions, history);
         Handler = new UpdateHandler(Bot, NullLogger<UpdateHandler>.Instance, _completion, messages, tokens,
             new TooLongDidNotReadToday(messages, tokens, new SummaryOpenAiClient(_completion, "test-summary"),
                 NullLogger<TooLongDidNotReadToday>.Instance, Bot, whitelist, Substitute.For<ITimedTaskExecutionRepository>(), azure),
             whitelist, new GenerateImage(new ImageOpenAiClient(imageClient), NullLogger<GenerateImage>.Instance, Bot),
             new TestUsers(), repository,
-            new ConversationPolicy(repository, new ConversationPolicyChats(), NullLogger<ConversationPolicy>.Instance, decisions),
+            Policy,
             new PersonalSettings(Bot, NullLogger<PersonalSettings>.Instance, azure), azure);
     }
 
