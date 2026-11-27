@@ -153,7 +153,7 @@ public class TooLongDidNotReadToday
         {
             fingerprint.AppendData(JsonSerializer.SerializeToUtf8Bytes(new
             {
-                message.Id, message.MessageId, message.MessageThreadId, message.User, message.UserId, message.Message, message.Date,
+                message.Id, message.MessageId, message.MessageThreadId, message.User, message.UserId, message.EffectiveMessage, message.Date,
             }));
             yield return message;
         }

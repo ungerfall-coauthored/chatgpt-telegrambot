@@ -52,7 +52,7 @@ public sealed class ChatMessageBuilder :
 
     public IChatMessageBuilderAddMessagesState AddMessage(TelegramMessage message, int? index = null)
     {
-        Add(Format(message, message.Message), index);
+        Add(Format(message, message.EffectiveMessage), index);
         return this;
     }
 
@@ -69,7 +69,7 @@ public sealed class ChatMessageBuilder :
         return _lastUserMessage == null ? [.. _message] : [.. _message, _lastUserMessage];
     }
 
-    public bool CanAddMessage(TelegramMessage message) => CanAdd(Format(message, message.Message));
+    public bool CanAddMessage(TelegramMessage message) => CanAdd(Format(message, message.EffectiveMessage));
 
     private bool CanAdd(ChatMessage message) => (long)_tokensSum + Count(message) <= _maxTokens;
 
@@ -115,20 +115,21 @@ public sealed class ChatMessageBuilder :
             }
 
             // Split an oversized message without dropping characters or cutting a surrogate pair.
-            for (var offset = 0; offset < message.Message.Length;)
+            var text = message.EffectiveMessage;
+            for (var offset = 0; offset < text.Length;)
             {
                 cancellation.ThrowIfCancellationRequested();
                 var low = 1;
-                var high = message.Message.Length - offset;
+                var high = text.Length - offset;
                 var length = 0;
                 while (low <= high)
                 {
                     var middle = low + (high - low) / 2;
                     var candidate = middle;
-                    if (offset + candidate < message.Message.Length && char.IsHighSurrogate(message.Message[offset + candidate - 1])
-                        && char.IsLowSurrogate(message.Message[offset + candidate])) candidate--;
+                    if (offset + candidate < text.Length && char.IsHighSurrogate(text[offset + candidate - 1])
+                        && char.IsLowSurrogate(text[offset + candidate])) candidate--;
                     if (candidate == 0) { low = middle + 1; continue; }
-                    if (builder.CanAdd(Format(message, message.Message.Substring(offset, candidate))))
+                    if (builder.CanAdd(Format(message, text.Substring(offset, candidate))))
                     {
                         length = candidate;
                         low = middle + 1;
@@ -136,7 +137,7 @@ public sealed class ChatMessageBuilder :
                     else high = middle - 1;
                 }
                 if (length == 0) throw new InvalidOperationException("Summary token budget leaves no room for message content.");
-                builder.Add(Format(message, message.Message.Substring(offset, length)));
+                builder.Add(Format(message, text.Substring(offset, length)));
                 yield return builder.Build();
                 builder = NewBuilder();
                 offset += length;

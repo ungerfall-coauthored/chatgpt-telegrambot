@@ -38,7 +38,7 @@ public sealed class PromptCatalog
         Required(Chat.Default, Chat.UntrustedDataPrefix, Chat.Continuation, Chat.Autonomous,
             Decisions.UntrustedDataPrefix, Decisions.NaturalRequest, Decisions.Continuation,
             Decisions.Interjection, Decisions.CasualContext, Summaries.DefaultSystem, Summaries.Daily,
-            Summaries.Tldr, Summaries.ShrinkSystem, Summaries.ShrinkUserPrefix, ReleaseAnnouncement);
+            Summaries.Tldr, ReleaseAnnouncement);
         Required(Chat.Groups.Values.Concat(Summaries.SystemByGroup.Values).ToArray());
     }
 
@@ -70,8 +70,6 @@ public sealed class SummaryPrompts
     public Dictionary<long, string> SystemByGroup { get; set; } = null!;
     public string Daily { get; set; } = null!;
     public string Tldr { get; set; } = null!;
-    public string ShrinkSystem { get; set; } = null!;
-    public string ShrinkUserPrefix { get; set; } = null!;
 }
 
 public static class PromptServiceCollectionExtensions
