@@ -392,7 +392,6 @@ Additional settings:
 | `AZURE_OPENAI_TOKEN_ENCODING` | `o200k_base` | SharpToken encoding name, shared by chat and summaries; use one appropriate for the deployed model families |
 | `AZURE_OPENAI_AUTONOMOUS_MAX_COMPLETION_TOKENS` | `120`, capped by chat output limit | Output ceiling for optional autonomous interjections; increase if reasoning consumes it |
 | `MessageRetentionDays` | `1` | Positive whole days to retain **newly stored** messages; set `7` for a week if the group accepts the longer retention |
-| `ShrinkMinimumTokens` | `512` | Minimum message size eligible for the existing shrink job; positive integer, no old 32K ceiling |
 
 Token counting is an estimate; retain a safety margin and use API-reported usage
 as authoritative. A larger context does not recover deleted history. Retention
@@ -401,11 +400,14 @@ for per-item expiration to take effect. Longer retention increases stored data
 and may increase request costs. Daily summaries and `/tldrtoday` still summarize
 the current UTC day, not the entire retention period.
 
-The Azure shrink job still runs on messages older than an hour. Larger windows
-make aggressive shrinking less necessary: raise `ShrinkMinimumTokens` or set
-`AzureWebJobs.ShrinkMessage.Disabled=true` to retain verbatim text. Original text
-is preserved in `OriginalMessage` when a message is shrunk; disabling the job
-does not restore previously shortened messages. Telegram's 4,096-character send
+Automatic message shrinking has been retired. Chat context and summaries use
+the preserved original text of surviving legacy shrunk records when available;
+no documents are rewritten and their expiration deadlines are unchanged.
+Missing or expired originals cannot be reconstructed without an external export.
+The legacy fields remain readable during the transition. Obsolete
+`ShrinkMinimumTokens` and `AzureWebJobs.ShrinkMessage.Disabled` settings can be
+removed after verifying the deployed function list no longer contains
+`ShrinkMessage`. Daily summaries, `/tldrtoday`, Telegram's 4,096-character send
 limit, delivery chunking, and reply-frequency/cooldown safeguards are unchanged.
 
 ## 2. Run live Azure tests locally

@@ -39,15 +39,14 @@ public class TelegramMessage
     [JsonPropertyName("isShrunk")]
     public bool IsShrunk { get; init; }
 
-    public bool ShrinkProcessed { get; set; }
-    public int? ShrinkSkippedBelowTokens { get; set; }
-    public DateTime? ShrinkLeaseUntilUtc { get; set; }
-
     [JsonIgnore]
     public string? ETag { get; set; }
 
     /// <summary>
-    /// In case of message is shrunk
+    /// Original text retained by the retired shrink job.
     /// </summary>
     public string? OriginalMessage { get; init; }
+
+    [JsonIgnore]
+    public string EffectiveMessage => IsShrunk && !string.IsNullOrEmpty(OriginalMessage) ? OriginalMessage : Message;
 }

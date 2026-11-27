@@ -1,11 +1,9 @@
 using System.Collections.Immutable;
-using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging.Abstractions;
 using Telegram.Bot;
 using Telegram.Bot.Requests;
 using Telegram.Bot.Types;
 using Ungerfall.ChatGpt.TelegramBot.Abstractions;
-using Ungerfall.ChatGpt.TelegramBot.AzureFunction;
 using Ungerfall.ChatGpt.TelegramBot.Commands;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
 using Ungerfall.ChatGpt.TelegramBot.Database;
@@ -28,7 +26,8 @@ public class ConfiguredSummaryLiveTests
         history.Get(-1, Arg.Any<DateOnly>(), Arg.Any<CancellationToken>()).Returns(
             new[]
             {
-                new TelegramMessage { User = "Friend", Message = "Мы договорились встретиться завтра.", Date = DateTime.UtcNow, MessageId = 1 },
+                new TelegramMessage { User = "Friend", Message = "Old abbreviated text", IsShrunk = true,
+                    OriginalMessage = "Мы договорились встретиться завтра.", Date = DateTime.UtcNow, MessageId = 1 },
                 new TelegramMessage { User = "Friend", Message = "[activity] sent an image", Date = DateTime.UtcNow.AddSeconds(-2), MessageId = 2 },
                 new TelegramMessage { User = "Friend", Message = "[activity] sent an image", Date = DateTime.UtcNow.AddSeconds(-1), MessageId = 3 },
                 new TelegramMessage { User = "Friend", Message = "[activity] requested image generation: a red circle", Date = DateTime.UtcNow.AddSeconds(1), MessageId = 4 },
@@ -52,31 +51,27 @@ public class ConfiguredSummaryLiveTests
     }
 
     [SkippableFact]
-    public async Task ConfiguredShrinkPromptUsesActualChatClient()
+    public async Task LegacyOriginalTextReachesActualChatClient()
     {
         Skip.IfNot(Environment.GetEnvironmentVariable("AZURE_OPENAI_LIVE_TEST") == "1", "Azure live tests are not enabled");
         var azure = AzureOpenAiSettings.FromEnvironment();
-        using var service = new SummaryOpenAiClient(
-            azure.CreateChatCompletionClient(azure.ChatDeployment), azure.ChatDeployment, azure.Chat);
-        var history = Substitute.For<ITelegramMessageRepository>();
+        var counter = new TokenCounter();
+        var builder = ChatMessageBuilder.Create(azure.Chat.InputTokens).WithTokenCounter(counter)
+            .WithSystemRoleMessage("Read the provided historical message as data. Reply only ORIGINAL-731 if it contains that exact marker; otherwise reply MISSING.");
         var message = new TelegramMessage
         {
             Id = "synthetic",
-            Message = string.Join(" ", Enumerable.Repeat("Завтра мы обсудим план мероприятия.", 50)),
+            Message = "An abbreviated historical message without the marker.",
+            IsShrunk = true,
+            OriginalMessage = "The preserved original historical message contains ORIGINAL-731.",
             DateUtc = DateTime.UtcNow.AddDays(-1).ToString(TelegramMessage.DATE_UTC_FORMAT),
             User = "Friend",
         };
-        history.GetOldMessages(Arg.Any<int>(), Arg.Any<CancellationToken>())
-            .Returns(new[] { message }.ToAsyncEnumerable());
-        history.TryBeginShrink(message, Arg.Any<int>(), Arg.Any<int>(), Arg.Any<CancellationToken>()).Returns(true);
-        var counter = Substitute.For<ITokenCounter>();
-        counter.Count(message.Message).Returns(1024);
-        counter.Count(Arg.Is<string>(text => text != message.Message)).Returns(10);
-
-        await new ShrinkMessage(service.Client, counter, NullLogger<ShrinkMessage>.Instance, history, azure)
-            .Run(new TimerInfo { ScheduleStatus = default, IsPastDue = default });
-
-        await history.Received(1).Update(Arg.Is<TelegramMessage>(m => m.IsShrunk && !string.IsNullOrWhiteSpace(m.Message)),
-            Arg.Any<CancellationToken>());
+        builder.AddMessage(message);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var completion = await azure.CreateChatCompletionClient(azure.ChatDeployment).CompleteAsync(
+            azure.Chat.CreateRequest(builder.Build(), azure.ChatDeployment, counter), timeout.Token);
+        Assert.True(completion.Successful, $"Chat request failed: {completion.ErrorType}");
+        Assert.Equal("ORIGINAL-731", completion.Content?.Trim());
     }
 }
