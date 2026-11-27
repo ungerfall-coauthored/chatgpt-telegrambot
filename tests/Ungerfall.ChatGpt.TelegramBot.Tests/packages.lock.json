@@ -147,13 +147,12 @@
       },
       "Microsoft.Azure.Cosmos": {
         "type": "Transitive",
-        "resolved": "3.43.1",
-        "contentHash": "eQG0Y9WGfpiw+vga0QmweTOc5EJIKG3sF7xQvMszbnEb9Vb0fOKPKUq7owlb1tRGRELhAPMjxoVZzmW8toNEyw==",
+        "resolved": "3.64.0",
+        "contentHash": "4aXl5AgXiLMR7Y1/XPYcNsfjSub8hffiNAvcfOtKrLVLGW2sD6aYvEhjv0tWiBeokBzIwtKK2lQYi0JsGUsqzA==",
         "dependencies": {
-          "Azure.Core": "1.19.0",
-          "Microsoft.Bcl.AsyncInterfaces": "1.0.0",
+          "Azure.Core": "1.44.1",
+          "Microsoft.Bcl.AsyncInterfaces": "6.0.0",
           "Microsoft.Bcl.HashCode": "1.1.0",
-          "Newtonsoft.Json": "10.0.2",
           "System.Configuration.ConfigurationManager": "6.0.0"
         }
       },
@@ -774,6 +773,15 @@
           "SharpToken": "[2.0.3, )",
           "Telegram.Bot": "[22.10.3.3, )",
           "Ungerfall.ChatGpt.TelegramBot": "[1.0.0, )"
+        }
+      },
+      "ungerfall.chatgpt.historypoc": {
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.Azure.Cosmos": "[3.64.0, )",
+          "Newtonsoft.Json": "[13.0.3, )",
+          "OpenAI": "[2.15.0, )",
+          "SharpToken": "[2.0.3, )"
         }
       },
       "ungerfall.chatgpt.telegrambot": {
