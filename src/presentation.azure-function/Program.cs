@@ -11,6 +11,7 @@ using Ungerfall.ChatGpt.TelegramBot.Commands;
 using Ungerfall.ChatGpt.TelegramBot.Configuration;
 using Ungerfall.ChatGpt.TelegramBot.Database;
 using Ungerfall.ChatGpt.TelegramBot.TimedTasks;
+using Ungerfall.ChatGpt.TelegramBot.History;
 
 var host = AzureFunctionHost.HostBuilder.Value;
 host.Run();
@@ -71,6 +72,19 @@ namespace Ungerfall.ChatGpt.TelegramBot.AzureFunction
                            });
                    });
                    s.AddScoped<ITelegramMessageRepository, TelegramMessageRepository>();
+                   s.AddSingleton(_ => HistoryOptions.FromEnvironment());
+                   s.AddKeyedSingleton<CosmosClient>("history", (sp, _) => new CosmosClient(
+                       sp.GetRequiredService<IOptions<CosmosDbOptions>>().Value.ConnectionString,
+                       new CosmosClientOptions
+                       {
+                           Serializer = new HistoryCosmosSerializer(),
+                           ConnectionMode = ConnectionMode.Gateway,
+                           MaxRetryAttemptsOnRateLimitedRequests = 3,
+                           RequestTimeout = TimeSpan.FromSeconds(30),
+                       }));
+                   s.AddScoped(sp => new HistoryRepository(sp.GetRequiredKeyedService<CosmosClient>("history"),
+                       sp.GetRequiredService<IOptions<CosmosDbOptions>>().Value.DatabaseId,
+                       sp.GetRequiredService<HistoryOptions>()));
                    s.AddScoped<IConversationRepository, ConversationRepository>();
                    s.AddScoped<ConversationPolicy>();
                    s.AddSingleton<ConversationPolicyChats>();
