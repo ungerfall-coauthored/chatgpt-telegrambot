@@ -31,7 +31,9 @@ public class HistoryPocTests
           {"id":2,"type":"message","date":"2026-11-20T02:00:00","text":"second"},
           {"id":3,"type":"message","date":"2026-11-20T03:00:00","reply_to_top_id":50,"text":"another topic"},
           {"id":4,"type":"service","date":"2026-11-20T04:00:00","text":""},
-          {"id":5,"type":"message","date":"2026-11-21T01:00:00","text":"new day"}
+          {"id":5,"type":"message","date":"2026-11-21T01:00:00","text":"new day"},
+          {"id":6,"type":"message","date":"2026-11-21T01:00:00","file":"omitted-media"},
+          {"id":7,"type":"message","date":"2026-11-21T01:00:00","text":[{"type":"custom_emoji"},null,42]}
         ]}
         """);
         var chunks = TelegramHistoryPocSample.Read(export.RootElement, 10);

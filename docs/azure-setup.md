@@ -90,7 +90,9 @@ Privately load the settings into the test process, then run:
 HISTORY_POC_LIVE_TEST=1 dotnet test tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj -c Release --filter 'FullyQualifiedName~CosmosHistoryPocTests' --logger 'console;verbosity=detailed'
 ```
 
-The tests require no Telegram interaction. They first verify the embedding
+Run this selector separately from offline tests, which replace process-wide
+settings with synthetic values. The tests require no Telegram interaction.
+They first verify the embedding
 deployment. The retrieval test refuses to create a container unless a read-only
 throughput probe confirms serverless mode; it never requests provisioned
 throughput or changes existing containers. Vector search must be available on
@@ -107,10 +109,12 @@ artifacts, or test output.
 The experiment measures four factual retrievals, approximate/exact top-five
 overlap, partition isolation, idempotent replay, stale ETag rejection, deletion,
 embedding input tokens, latency, and observed request units. It stops issuing
-normal operations after 50,000 observed RUs and caps initial embedding input at
+normal operations after 100,000 observed RUs and caps initial embedding input at
 500,000 tokens. The RU threshold is a stop-after-observation guard, not a hard
-billing cap; cleanup still runs. DiskANN is approximate, and a small passing
-corpus does not prove recall or cost for the full archive. Production support
+billing cap; cleanup still runs. Identical approximate/exact results or RU costs
+do not prove that DiskANN, rather than a scan, served the queries. DiskANN is
+approximate, and a small passing corpus does not prove recall or cost for the
+full archive. Production support
 still needs durable asynchronous ingestion, permission enforcement, edit/delete
 reconciliation, coverage reporting, retention policy, and bounded history tools.
 

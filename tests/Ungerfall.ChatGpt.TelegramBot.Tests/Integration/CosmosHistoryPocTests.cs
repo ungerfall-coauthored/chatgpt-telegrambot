@@ -9,6 +9,7 @@ using Ungerfall.ChatGpt.TelegramBot.History;
 namespace Ungerfall.ChatGpt.TelegramBot.Tests.Integration;
 
 [Trait("Category", "Integration")]
+[Collection("Conversation policy environment")]
 public class CosmosHistoryPocTests(Xunit.Abstractions.ITestOutputHelper output)
 {
     [SkippableFact]
@@ -131,8 +132,10 @@ public class CosmosHistoryPocTests(Xunit.Abstractions.ITestOutputHelper output)
                 started = Stopwatch.GetTimestamp();
                 var approximate = await store.SearchAsync("poc-chat-a", queries.Vectors[index], 5, false, timeout.Token);
                 var exact = await store.SearchAsync("poc-chat-a", queries.Vectors[index], 5, true, timeout.Token);
-                Assert.Contains(approximate.Hits, hit => hit.Id == "fact-" + index);
-                Assert.All(approximate.Hits, hit => Assert.Equal("poc-chat-a", hit.ChatId));
+                Assert.True(approximate.Hits.Any(hit => hit.Id == "fact-" + index),
+                    "Ground-truth fact was not retrieved in the top five; private results withheld.");
+                Assert.True(approximate.Hits.All(hit => hit.ChatId == "poc-chat-a"),
+                    "Search returned a different chat; private results withheld.");
                 var overlap = approximate.Hits.Select(hit => hit.Id).Intersect(exact.Hits.Select(hit => hit.Id)).Count();
                 overlaps.Add(overlap);
                 output.WriteLine($"Query={index}; top5Overlap={overlap}/5; approximateRU={approximate.RequestUnits:F2}; exactRU={exact.RequestUnits:F2}; elapsedMs={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0}");
@@ -152,7 +155,8 @@ public class CosmosHistoryPocTests(Xunit.Abstractions.ITestOutputHelper output)
             var deleted = await Assert.ThrowsAsync<CosmosException>(() => store.ReadAsync("fact-0", "poc-chat-a", timeout.Token));
             Assert.Equal(HttpStatusCode.NotFound, deleted.StatusCode);
             var afterDelete = await store.SearchAsync("poc-chat-a", queries.Vectors[0], 5, false, timeout.Token);
-            Assert.DoesNotContain(afterDelete.Hits, hit => hit.Id == "fact-0" || hit.Id == "foreign");
+            Assert.False(afterDelete.Hits.Any(hit => hit.Id == "fact-0" || hit.Id == "foreign"),
+                "Search returned a deleted or foreign document; private results withheld.");
             output.WriteLine($"PoC passed: four factual queries; replay/partition/ETag/delete checks; embeddingInputTokens={inputTokens}; observedRU={store.RequestUnits:F2}; private content omitted.");
         }
         catch (CosmosException error)

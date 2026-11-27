@@ -37,7 +37,7 @@ public sealed class CosmosHistoryPocStore : IAsyncDisposable
     private readonly Container _container;
     private CosmosHistoryPocStore(Container container) => _container = container;
     public double RequestUnits { get; private set; }
-    public const double MaximumRequestUnits = 50000;
+    public const double MaximumRequestUnits = 100000;
 
     public static async Task<CosmosHistoryPocStore> CreateAsync(CosmosClient client, string databaseId,
         CancellationToken cancellation)

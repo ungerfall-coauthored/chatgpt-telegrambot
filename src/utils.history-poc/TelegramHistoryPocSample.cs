@@ -49,7 +49,7 @@ public static class TelegramHistoryPocSample
         foreach (var message in messages)
         {
             if (message.GetProperty("type").GetString() != "message") { Flush(); if (chunks.Count >= maximumChunks) break; continue; }
-            var text = Text(message.GetProperty("text"));
+            var text = message.TryGetProperty("text", out var content) ? Text(content) : "";
             if (string.IsNullOrWhiteSpace(text)) continue;
             var date = message.GetProperty("date").GetString() ?? "";
             var topic = message.TryGetProperty("reply_to_top_id", out var thread) ? thread.ToString() : "";
@@ -71,7 +71,9 @@ public static class TelegramHistoryPocSample
     {
         JsonValueKind.String => text.GetString() ?? "",
         JsonValueKind.Array => string.Concat(text.EnumerateArray().Select(part =>
-            part.ValueKind == JsonValueKind.String ? part.GetString() : part.GetProperty("text").GetString())),
+            part.ValueKind == JsonValueKind.String ? part.GetString()
+                : part.ValueKind == JsonValueKind.Object && part.TryGetProperty("text", out var value)
+                    && value.ValueKind == JsonValueKind.String ? value.GetString() : "")),
         _ => "",
     };
 }
