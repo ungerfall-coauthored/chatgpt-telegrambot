@@ -118,6 +118,62 @@ full archive. Production support
 still needs durable asynchronous ingestion, permission enforcement, edit/delete
 reconciliation, coverage reporting, retention policy, and bounded history tools.
 
+### Durable archive foundation
+
+The production archive foundation is separate from the one-day rolling context.
+It does **not yet enable live capture, embeddings, or bot history tools**.
+Keep `HistoryEnabled=false` until those paths and hosted prerequisites pass
+their release gates.
+
+`historyMessages` retains full original text, media metadata, source timestamps,
+consent records, activity counters, import checkpoints and indexing work intents.
+Canonical source, counter and work changes commit atomically; duplicate updates
+and stale exports do not add activity or resurrect tombstones. Explicit consent
+revocation wins over an import, including races with source batches.
+Signed Desktop export IDs are retained as opaque source identities; negative
+IDs must not be used as Telegram Bot API links. Media binaries are not imported.
+
+`historyChunks` is a rebuildable 512-dimensional cosine quantized-flat index
+containing references and character ranges rather than duplicate source text.
+Both containers use `/chatId` and disabled default expiry (`-1`). Provisioning
+checks serverless, partition, expiry and vector/index policies; it never changes
+existing mismatched containers or requests throughput.
+
+Privately load the existing Cosmos settings and set `HistoryChats` to exactly
+one consented group for imports. Container names can be overridden with
+`HistoryMessagesContainer` and `HistoryChunksContainer`.
+
+```sh
+dotnet run --project src/utils.history/provision -c Release
+dotnet run --project src/utils.history/import -c Release -- --verify-client
+dotnet run --project src/utils.history/import -c Release -- --dry-run
+dotnet run --project src/utils.history/import -c Release -- --confirm-consent
+```
+
+Set `HISTORY_EXPORT` privately to the local ZIP path. The dry run streams the
+complete export, validates its target and reports only aggregate sizes/tokens.
+Writes require confirmed chat-scoped consent. Import checkpoints are keyed by
+archive SHA-256; ETag leases prevent simultaneous importers, and source batches
+commit with their checkpoint. Re-running resumes the same archive or reports
+that it is already complete. Explicitly revoked authors are not re-authorized.
+After an interrupted importer, wait for its three-minute lease to expire.
+
+`HistoryImportBudgetUsd` defaults to `2`. This is a stop-after-observed
+source-operation RU guard at $0.305/million RUs, not a hard billing cap or a
+budget covering embeddings, storage and other Azure services. Review the budget
+before resuming a budget-stopped import. Do not upload archives, settings,
+identities or original text into Git, CI, logs or test failure output.
+
+```sh
+DURABLE_HISTORY_LIVE_TEST=1 dotnet test tests/Ungerfall.ChatGpt.TelegramBot.Tests/Ungerfall.ChatGpt.TelegramBot.Tests.csproj -c Release --filter 'FullyQualifiedName~DurableHistoryLiveTests'
+```
+
+Run live selectors separately from offline tests. The canonical tests use a
+disposable synthetic serverless container. `--verify-client` separately checks
+source serialization and vector SQL with the actual production Cosmos SDK
+3.43.1, using and then removing an isolated synthetic partition; the test
+project's newer PoC SDK cannot establish that runtime contract.
+
 ### Storage function tools
 
 The chat deployment must support strict function calling. Storage tools are
