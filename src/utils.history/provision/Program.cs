@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Net;
 using Microsoft.Azure.Cosmos;
 using Ungerfall.ChatGpt.TelegramBot.History;
+using Azure.Messaging.ServiceBus.Administration;
 
 using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
 var options = HistoryOptions.FromEnvironment();
@@ -60,6 +61,16 @@ try
             await database.CreateContainerAsync(properties, cancellationToken: timeout.Token);
         }
     }
+    var administration = new ServiceBusAdministrationClient(Environment.GetEnvironmentVariable("ServiceBusConnection")
+        ?? throw new InvalidOperationException("ServiceBusConnection is required."));
+    if (!await administration.QueueExistsAsync(HistoryOptions.QueueName, timeout.Token))
+        await administration.CreateQueueAsync(new CreateQueueOptions(HistoryOptions.QueueName)
+        {
+            DefaultMessageTimeToLive = TimeSpan.FromDays(1), MaxDeliveryCount = 10, RequiresSession = false,
+        }, timeout.Token);
+    var queue = (await administration.GetQueueAsync(HistoryOptions.QueueName, timeout.Token)).Value;
+    if (queue.RequiresSession || queue.RequiresDuplicateDetection)
+        throw new InvalidOperationException("Existing history queue has unsupported session/deduplication settings.");
     Console.WriteLine("Persistent history containers verified; serverless retained; no throughput requested.");
 }
 catch (CosmosException error)

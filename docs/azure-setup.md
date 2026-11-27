@@ -118,12 +118,57 @@ full archive. Production support
 still needs durable asynchronous ingestion, permission enforcement, edit/delete
 reconciliation, coverage reporting, retention policy, and bounded history tools.
 
-### Durable archive foundation
+### Durable Telegram history
 
 The production archive foundation is separate from the one-day rolling context.
-It does **not yet enable live capture, embeddings, or bot history tools**.
+Live capture, asynchronous embeddings and read-only history tools are opt-in.
 Keep `HistoryEnabled=false` until those paths and hosted prerequisites pass
 their release gates.
+
+When enabled for `HistoryChats`, authenticated incoming originals and edits are
+archived before normal reply handling. Only known consenting nonbot authors are
+captured; newcomers use `/historyconsent`. Callbacks, ephemeral IDs and bot
+messages are excluded. Full captions and metadata-only activity remain canonical.
+Embeddings never run on the reply path.
+
+`DispatchHistory` leases pending hour/topic work and sends references to the
+`tgbot-history` Service Bus queue in the existing namespace. `IndexHistory`
+builds lossless, Unicode-safe chunks of at most 512 tokens with the dedicated
+`bot-embeddings` deployment. It conditionally activates a versioned manifest,
+rejects stale source changes, checks current consent and removes superseded
+vectors. Bounded maintenance pages repair orphan cleanup; raw originals and
+media binaries are not queue payloads. Oversized hour buckets fail explicitly
+rather than silently truncating the archive.
+
+Only user `66215515` in an opted-in chat can use `history_query`, `history_get`,
+`history_search`, `history_activity` and `history_coverage`. Topic scope is
+server-owned. History tools are not available to autonomous replies or scheduled
+summaries. Read-only SQL accepts permitted SELECT/WHERE/GROUP BY/ORDER BY clauses,
+not FROM, joins, subqueries or mutations. Aggregates complete or return an error;
+row reads have signed, expiring chat/user/topic/query-bound cursors. Use
+`history_activity` for exact yearly ASCII histograms, not vector-hit counts.
+Each turn permits three history calls and 4000 retrieved tokens.
+
+Originals with unknown author IDs remain stored but are not exposed to AI until
+identity/consent can be established. Forwarded originals remain stored; they are
+excluded from embedding/text retrieval, but consenting senders' forwarding
+activity counts as source-message activity. There is no automatic history
+retrieval for unsolicited replies.
+
+`/historyforget` revokes the requesting author's consent and resumably purges
+their archived originals, author counters and affected vectors. Recent rolling
+originals are removed and future rolling reads/writes suppress revoked authors.
+Minimal opt-out records and anonymous source tombstones remain to prevent
+backfill resurrection. Index cleanup may continue asynchronously. New consent
+does not restore tombstones. Copies already sent to Telegram or AI providers
+cannot be recalled. Ordinary group deletion updates are not delivered by
+Telegram, so the archive cannot infer deletions from message-ID gaps.
+
+`HistoryMonthlyBudgetUsd` defaults to `5`. A shared UTC-month ledger reserves and
+settles observed RU/embedding costs for indexing and retrieval, allowing source
+capture to continue when those operations pause. Crashed reservations remain
+conservatively charged. This is not a hard Azure billing cap; answer generation,
+storage, queue/Functions costs and unobserved operations are separate.
 
 `historyMessages` retains full original text, media metadata, source timestamps,
 consent records, activity counters, import checkpoints and indexing work intents.
@@ -147,6 +192,7 @@ one consented group for imports. Container names can be overridden with
 dotnet run --project src/utils.history/provision -c Release
 dotnet run --project src/utils.history/import -c Release -- --verify-client
 dotnet run --project src/utils.history/import -c Release -- --dry-run
+dotnet run --project src/utils.history/import -c Release -- --seed-consent --confirm-consent
 dotnet run --project src/utils.history/import -c Release -- --confirm-consent
 ```
 
@@ -157,6 +203,11 @@ archive SHA-256; ETag leases prevent simultaneous importers, and source batches
 commit with their checkpoint. Re-running resumes the same archive or reports
 that it is already complete. Explicitly revoked authors are not re-authorized.
 After an interrupted importer, wait for its three-minute lease to expire.
+Seed confirmed export-author consent before enabling capture, preserving prior
+revocations. Verify hosted bot visibility and active webhook message/edit
+coverage with `--verify-telegram`; no human Telegram interaction is required.
+Enable capture before the full backfill. `--max-messages=256` creates a bounded
+source checkpoint for RU/latency calibration without marking the export complete.
 
 `HistoryImportBudgetUsd` defaults to `2`. This is a stop-after-observed
 source-operation RU guard at $0.305/million RUs, not a hard billing cap or a

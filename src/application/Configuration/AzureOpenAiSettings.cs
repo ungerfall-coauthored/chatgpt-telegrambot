@@ -8,6 +8,7 @@ using System.ClientModel.Primitives;
 using System.Globalization;
 using System.Net.Http;
 using Ungerfall.ChatGpt.TelegramBot.Storage;
+using Ungerfall.ChatGpt.TelegramBot.History;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Configuration;
 
@@ -59,14 +60,14 @@ public sealed class AzureOpenAiSettings
             ? int.Parse(autonomousTokens, CultureInfo.InvariantCulture) : null);
 
     public IChatCompletionClient CreateChatCompletionClient(string deployment, HttpClient? httpClient = null,
-        StorageTools? storageTools = null, ILogger<OpenAiChatCompletionClient>? logger = null)
+        StorageTools? storageTools = null, ILogger<OpenAiChatCompletionClient>? logger = null, HistoryTools? historyTools = null)
     {
         var options = new OpenAIClientOptions
         {
             Endpoint = new Uri(new Uri(Endpoint), "openai/v1/"),
         };
         if (httpClient != null) options.Transport = new HttpClientPipelineTransport(httpClient);
-        return new OpenAiChatCompletionClient(new ChatClient(deployment, new ApiKeyCredential(ApiKey), options), storageTools, logger);
+        return new OpenAiChatCompletionClient(new ChatClient(deployment, new ApiKeyCredential(ApiKey), options), storageTools, logger, historyTools);
     }
 
     public IImageGenerationClient CreateImageGenerationClient(HttpClient httpClient, string deployment) =>
@@ -106,7 +107,8 @@ public static class AzureOpenAiServiceCollectionExtensions
         services.AddSingleton<IQuizStorage, QuizStorageRepository>();
         services.AddSingleton<StorageTools>();
         services.AddSingleton<IChatCompletionClient>(sp => settings.CreateChatCompletionClient(settings.ChatDeployment,
-            storageTools: sp.GetRequiredService<StorageTools>(), logger: sp.GetService<ILogger<OpenAiChatCompletionClient>>()));
+            storageTools: sp.GetRequiredService<StorageTools>(), logger: sp.GetService<ILogger<OpenAiChatCompletionClient>>(),
+            historyTools: sp.GetService<HistoryTools>()));
         services.AddSingleton(_ => new SummaryOpenAiClient(
             settings.CreateChatCompletionClient(settings.SummaryDeployment), settings.SummaryDeployment, settings.Summary));
         services.AddHttpClient("azure-openai-images")

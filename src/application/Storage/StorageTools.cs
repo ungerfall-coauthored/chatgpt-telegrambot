@@ -8,7 +8,7 @@ using OpenAI.Chat;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Storage;
 
-public sealed record StorageContext(long ChatId, long UserId, int MessageId, string CurrentRequest);
+public sealed record StorageContext(long ChatId, long UserId, int MessageId, string CurrentRequest, int? ThreadId = null);
 
 public sealed record StorageResult(string Status, string? Code = null, string? Message = null, object? Data = null)
 {

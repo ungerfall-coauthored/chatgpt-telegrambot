@@ -43,7 +43,8 @@ public class DependencyInjectionTest
             // These services are composed by the one-shot pipeline runner, not the bot host.
             if (type == typeof(GitHubReleaseNotesSource) || type == typeof(ReleaseAnnouncementService))
                 continue;
-            if (type == typeof(ChatCompletionRequest) || type == typeof(ImageOpenAiClient))
+            if (type == typeof(ChatCompletionRequest) || type == typeof(ImageOpenAiClient)
+                || type == typeof(History.ArchiveChunk))
                 continue;
 
             // Skip anonymous types

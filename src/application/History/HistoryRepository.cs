@@ -15,6 +15,64 @@ public sealed class HistoryRepository
     private readonly Container _chunks;
     private readonly HistoryOptions _options;
     public double RequestUnits { get; private set; }
+    public static decimal RuCost(double units) => (decimal)units * 0.305m / 1000000;
+
+    private async Task<HistoryReservation?> ChangeBudget(string id, string? token, decimal? reserve,
+        decimal charge, CancellationToken cancellation)
+    {
+        var partition = new PartitionKey(0);
+        for (var attempt = 0; attempt < 12; attempt++)
+        {
+            HistoryUsage ledger;
+            string? etag = null;
+            try
+            {
+                var read = await _messages.ReadItemAsync<HistoryUsage>(id, partition, cancellationToken: cancellation);
+                RequestUnits += read.RequestCharge;
+                ledger = read.Resource;
+                etag = read.ETag;
+            }
+            catch (CosmosException error) when (error.StatusCode == HttpStatusCode.NotFound)
+            {
+                RequestUnits += error.RequestCharge;
+                ledger = new HistoryUsage { Id = id, ChatId = 0 };
+            }
+            if (reserve != null)
+            {
+                if (ledger.UsedUsd + ledger.Reservations.Values.Sum() + reserve > _options.MonthlyBudgetUsd) return null;
+                ledger.Reservations.Add(token!, reserve.Value);
+            }
+            else if (token != null && !ledger.Reservations.Remove(token)) return null;
+            ledger.UsedUsd += charge;
+            try
+            {
+                var written = etag == null
+                    ? await _messages.CreateItemAsync(ledger, partition, cancellationToken: cancellation)
+                    : await _messages.ReplaceItemAsync(ledger, id, partition,
+                        new ItemRequestOptions { IfMatchEtag = etag }, cancellation);
+                RequestUnits += written.RequestCharge;
+                return new(id, token ?? "");
+            }
+            catch (CosmosException error) when (error.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed)
+            {
+                RequestUnits += error.RequestCharge;
+            }
+        }
+        throw new InvalidOperationException("History budget contention exceeded its retry limit.");
+    }
+
+    public Task<HistoryReservation?> ReserveBudget(decimal reserve, CancellationToken cancellation)
+    {
+        if (reserve <= 0) throw new ArgumentOutOfRangeException(nameof(reserve));
+        return ChangeBudget($"budget:{DateTime.UtcNow:yyyyMM}", Guid.NewGuid().ToString("N"), reserve, 0, cancellation);
+    }
+
+    public Task SettleBudget(HistoryReservation? reservation, decimal charge, CancellationToken cancellation)
+    {
+        if (charge < 0) throw new ArgumentOutOfRangeException(nameof(charge));
+        return ChangeBudget(reservation?.LedgerId ?? $"budget:{DateTime.UtcNow:yyyyMM}", reservation?.Token,
+            null, charge, cancellation);
+    }
 
     public HistoryRepository(CosmosClient client, string database, HistoryOptions options)
     {
@@ -63,14 +121,53 @@ public sealed class HistoryRepository
     public async Task<bool> HasConsent(long chat, long user, CancellationToken cancellation) =>
         (await Read<HistoryConsent>(_messages, chat, $"consent:{user}", cancellation))?.Value.Granted == true;
 
-    public async Task SetConsent(long chat, long user, bool granted, CancellationToken cancellation)
+    public async Task<bool> IsRevoked(long chat, long user, CancellationToken cancellation) =>
+        _options.Allows(chat) && (await Read<HistoryConsent>(_messages, chat, $"consent:{user}", cancellation))?.Value.Granted == false;
+
+    public async Task PurgeRolling(long chat, long user, CancellationToken cancellation)
+    {
+        Scope(chat);
+        var name = Environment.GetEnvironmentVariable("CosmosTelegramMessagesContainer");
+        if (string.IsNullOrWhiteSpace(name)) return;
+        var container = _messages.Database.GetContainer(name);
+        using var iterator = container.GetItemQueryIterator<JsonElement>(
+            new QueryDefinition("SELECT c.id FROM c WHERE c.userId = @user").WithParameter("@user", user),
+            requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(chat), MaxItemCount = 50 });
+        while (iterator.HasMoreResults)
+        {
+            var page = await iterator.ReadNextAsync(cancellation);
+            RequestUnits += page.RequestCharge;
+            foreach (var row in page)
+            {
+                try
+                {
+                    var deleted = await container.DeleteItemAsync<JsonElement>(row.GetProperty("id").GetString()!,
+                        new PartitionKey(chat), cancellationToken: cancellation);
+                    RequestUnits += deleted.RequestCharge;
+                }
+                catch (CosmosException error) when (error.StatusCode == HttpStatusCode.NotFound)
+                {
+                    RequestUnits += error.RequestCharge;
+                }
+            }
+        }
+    }
+
+    public async Task SetConsent(long chat, long user, bool granted, CancellationToken cancellation, bool purging = false)
     {
         Scope(chat);
         if (user <= 0) throw new ArgumentException("Invalid consent identity.");
-        var response = await _messages.UpsertItemAsync(new HistoryConsent
+        var existing = await Read<HistoryConsent>(_messages, chat, $"consent:{user}", cancellation);
+        if (granted && existing?.Value.Purging == true)
+            throw new InvalidOperationException("Author purge is still in progress.");
+        var consent = new HistoryConsent
         {
-            Id = $"consent:{user}", ChatId = chat, UserId = user, Granted = granted, ChangedUtc = DateTime.UtcNow,
-        }, new PartitionKey(chat), cancellationToken: cancellation);
+            Id = $"consent:{user}", ChatId = chat, UserId = user, Granted = granted, ChangedUtc = DateTime.UtcNow, Purging = purging,
+        };
+        var response = existing == null
+            ? await _messages.CreateItemAsync(consent, new PartitionKey(chat), cancellationToken: cancellation)
+            : await _messages.ReplaceItemAsync(consent, consent.Id, new PartitionKey(chat),
+                new ItemRequestOptions { IfMatchEtag = existing.Value.ETag }, cancellation);
         RequestUnits += response.RequestCharge;
     }
 
@@ -100,6 +197,9 @@ public sealed class HistoryRepository
     {
         if (existing.Deleted && !incoming.Deleted) return false;
         if (existing.Revision == incoming.Revision) return false;
+        if (existing.Deleted && incoming.Deleted && incoming.UserId == null && incoming.User.Length == 0
+            && incoming.Text.Length == 0 && !incoming.Consented && (existing.UserId != null || existing.User.Length != 0))
+            return true;
         if (incoming.Deleted && !existing.Deleted) return true;
         if (incoming.Origin == "legacy") return false;
         var incomingDate = incoming.EditedAtUtc ?? incoming.Date;
@@ -286,11 +386,11 @@ public sealed class HistoryRepository
     }
 
     public async Task<(JsonElement[] Rows, string? Continuation)> Page(long chat, QueryDefinition query,
-        int limit, string? continuation, CancellationToken cancellation)
+        int limit, string? continuation, CancellationToken cancellation, bool chunks = false)
     {
         Scope(chat);
         if (limit is < 1 or > 50) throw new ArgumentOutOfRangeException(nameof(limit));
-        using var pages = _messages.GetItemQueryIterator<JsonElement>(query, continuation,
+        using var pages = (chunks ? _chunks : _messages).GetItemQueryIterator<JsonElement>(query, continuation,
             new QueryRequestOptions { PartitionKey = new PartitionKey(chat), MaxItemCount = limit, MaxConcurrency = 1 });
         var response = await pages.ReadNextAsync(cancellation);
         RequestUnits += response.RequestCharge;
@@ -298,10 +398,43 @@ public sealed class HistoryRepository
         return (response.ToArray(), response.ContinuationToken);
     }
 
+    public async Task<HistorySweep> GetSweep(long chat, CancellationToken cancellation)
+    {
+        var saved = await Read<HistorySweep>(_messages, chat, "maintenance:sweep", cancellation);
+        if (saved == null) return new HistorySweep { ChatId = chat };
+        saved.Value.Value.ETag = saved.Value.ETag;
+        return saved.Value.Value;
+    }
+
+    public async Task SaveSweep(HistorySweep sweep, CancellationToken cancellation)
+    {
+        Scope(sweep.ChatId);
+        try
+        {
+            var response = sweep.ETag == null
+                ? await _messages.CreateItemAsync(sweep, new PartitionKey(sweep.ChatId), cancellationToken: cancellation)
+                : await _messages.ReplaceItemAsync(sweep, sweep.Id, new PartitionKey(sweep.ChatId),
+                    new ItemRequestOptions { IfMatchEtag = sweep.ETag }, cancellation);
+            RequestUnits += response.RequestCharge;
+        }
+        catch (CosmosException error) when (error.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed)
+        {
+            RequestUnits += error.RequestCharge;
+        }
+    }
+
     public async Task SaveChunk(HistoryChunk chunk, CancellationToken cancellation)
     {
         Scope(chunk.ChatId);
         var response = await _chunks.UpsertItemAsync(chunk, new PartitionKey(chunk.ChatId), cancellationToken: cancellation);
+        RequestUnits += response.RequestCharge;
+    }
+
+    public async Task DeleteActivity(long chat, string id, CancellationToken cancellation)
+    {
+        Scope(chat);
+        if (!id.StartsWith("activity:", StringComparison.Ordinal)) throw new ArgumentException("Invalid activity identity.");
+        var response = await _messages.DeleteItemAsync<HistoryActivity>(id, new PartitionKey(chat), cancellationToken: cancellation);
         RequestUnits += response.RequestCharge;
     }
 

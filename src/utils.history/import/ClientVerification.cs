@@ -8,7 +8,7 @@ internal static class ClientVerification
         var chat = -4000000000000000 - Random.Shared.NextInt64(1, 1000000000);
         var options = new HistoryOptions
         {
-            Chats = new HashSet<long> { chat }, MessagesContainer = configured.MessagesContainer,
+            Enabled = true, Chats = new HashSet<long> { chat }, MessagesContainer = configured.MessagesContainer,
             ChunksContainer = configured.ChunksContainer,
         };
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -22,8 +22,9 @@ internal static class ClientVerification
             {
                 ChatId = chat, SourceChatId = chat, MessageId = -1, Origin = "export",
                 Date = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
-                Text = "Synthetic compatibility fixture", Consented = true,
+                Text = "Synthetic compatibility fixture", Consented = true, UserId = 42, User = "Synthetic",
             };
+            await repository.EnsureImportConsent(chat, 42, cancellation.Token);
             if (!await repository.SaveMessage(original, cancellation.Token)
                 || (await repository.GetMessage(chat, original.Id, cancellation.Token))?.Text != original.Text)
                 throw new InvalidOperationException("Production Cosmos SDK source roundtrip failed.");
@@ -39,7 +40,23 @@ internal static class ClientVerification
                     .WithParameter("@vector", vector), 1, cancellation.Token, chunks: true);
             if (hits.Count != 1 || hits[0].GetProperty("id").GetString() != "client-verification")
                 throw new InvalidOperationException("Production Cosmos SDK vector query failed.");
-            Console.WriteLine($"Actual application Cosmos SDK {typeof(CosmosClient).Assembly.GetName().Version}: source roundtrip and vector SQL passed.");
+            var work = (await repository.GetWork(chat, original.Bucket, cancellation.Token))!;
+            await new HistoryIndexer(repository, options, new ArchiveEmbeddingClient())
+                .Index(new(chat, work.Id, work.Version), cancellation.Token);
+            var indexed = (await repository.GetWork(chat, work.Id, cancellation.Token))!;
+            if (indexed.IndexedVersion != indexed.Version || indexed.ActiveChunks.Length != 1)
+                throw new InvalidOperationException("Production Cosmos SDK asynchronous index path failed.");
+            var tools = new HistoryTools(client, database, options, new ArchiveEmbeddingClient());
+            var context = new Ungerfall.ChatGpt.TelegramBot.Storage.StorageContext(chat, HistoryOptions.ReaderUserId, 2, "Synthetic exact count");
+            var count = await tools.Execute("history_query",
+                """{"select":"VALUE COUNT(1)","predicate":"","groupBy":null,"orderBy":null,"limit":1,"cursor":null}""",
+                context, cancellation.Token);
+            if (count.Status != "ok")
+                throw new InvalidOperationException("Production Cosmos SDK history query failed.");
+            await new HistoryPrivacy(repository, options).Forget(chat, 42, cancellation.Token);
+            if ((await repository.GetMessage(chat, original.Id, cancellation.Token))?.UserId != null)
+                throw new InvalidOperationException("Production Cosmos SDK author purge failed.");
+            Console.WriteLine($"Actual application Cosmos SDK {typeof(CosmosClient).Assembly.GetName().Version}: source roundtrip, vector SQL, embedding/index activation, history query and purge passed.");
         }
         catch (CosmosException error)
         {
@@ -48,7 +65,9 @@ internal static class ClientVerification
         finally
         {
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            await repository.DeleteChunk(chat, "client-verification", cleanup.Token);
+            var chunks = await repository.Query<string>(chat, new QueryDefinition("SELECT VALUE c.id FROM c"),
+                20, cleanup.Token, chunks: true);
+            foreach (var id in chunks) await repository.DeleteChunk(chat, id, cleanup.Token);
             var ids = await repository.Query<string>(chat,
                 new QueryDefinition("SELECT VALUE c.id FROM c"), 20, cleanup.Token);
             foreach (var id in ids)
