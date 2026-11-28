@@ -149,6 +149,9 @@ summaries. Read-only SQL accepts permitted SELECT/WHERE/GROUP BY/ORDER BY clause
 not FROM, joins, subqueries or mutations. Aggregates complete or return an error;
 row reads have signed, expiring chat/user/topic/query-bound cursors. Use
 `history_activity` for exact yearly ASCII histograms, not vector-hit counts.
+When an unaliased row projection includes both `c.userId` and `c.text`, the
+result includes per-author counts of returned text messages on that page.
+These are sample sizes, not activity totals or proof of archive coverage.
 Each turn permits three history calls and 4000 retrieved tokens.
 
 Originals with unknown author IDs remain stored but are not exposed to AI until

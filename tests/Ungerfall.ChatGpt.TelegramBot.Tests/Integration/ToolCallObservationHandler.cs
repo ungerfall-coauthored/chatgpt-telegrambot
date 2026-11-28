@@ -2,12 +2,14 @@ using System.Text.Json;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Tests.Integration;
 
-internal sealed record ObservedToolCall(string Name, JsonElement Arguments);
+internal sealed record ObservedToolCall(string Id, string Name, JsonElement Arguments);
+internal sealed record ObservedToolResult(string Id, string Content);
 
 internal sealed class ToolCallObservationHandler : DelegatingHandler
 {
     public List<ObservedToolCall> Calls { get; } = new();
     public List<string[]> OfferedTools { get; } = new();
+    public List<ObservedToolResult> ToolResults { get; } = new();
     public int ToolResultRequests { get; private set; }
 
     public ToolCallObservationHandler() : base(new HttpClientHandler()) { }
@@ -16,6 +18,7 @@ internal sealed class ToolCallObservationHandler : DelegatingHandler
     {
         Calls.Clear();
         OfferedTools.Clear();
+        ToolResults.Clear();
         ToolResultRequests = 0;
     }
 
@@ -26,9 +29,14 @@ internal sealed class ToolCallObservationHandler : DelegatingHandler
             OfferedTools.Add(body.RootElement.TryGetProperty("tools", out var tools)
                 ? tools.EnumerateArray().Select(tool => tool.GetProperty("function").GetProperty("name").GetString()!).ToArray()
                 : Array.Empty<string>());
-            if (body.RootElement.GetProperty("messages").EnumerateArray()
-                .Any(message => message.GetProperty("role").GetString() == "tool"))
+            var toolMessages = body.RootElement.GetProperty("messages").EnumerateArray()
+                .Where(message => message.GetProperty("role").GetString() == "tool").ToArray();
+            if (toolMessages.Length > 0)
+            {
                 ToolResultRequests++;
+                ToolResults.AddRange(toolMessages.Select(message => new ObservedToolResult(
+                    message.GetProperty("tool_call_id").GetString()!, message.GetProperty("content").GetString()!)));
+            }
         }
         var response = await base.SendAsync(request, cancellation);
         if (!response.IsSuccessStatusCode) return response;
@@ -40,7 +48,7 @@ internal sealed class ToolCallObservationHandler : DelegatingHandler
             {
                 var function = call.GetProperty("function");
                 using var arguments = JsonDocument.Parse(function.GetProperty("arguments").GetString()!);
-                Calls.Add(new(function.GetProperty("name").GetString()!, arguments.RootElement.Clone()));
+                Calls.Add(new(call.GetProperty("id").GetString()!, function.GetProperty("name").GetString()!, arguments.RootElement.Clone()));
             }
         }
         return response;
