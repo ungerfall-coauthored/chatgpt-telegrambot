@@ -331,6 +331,12 @@ public sealed class HistoryRepository : IHistoryConsent
                 var existing = saved.Value.ValueKind == JsonValueKind.Undefined ? null
                     : saved.Value.Deserialize<HistoryMessage>(HistoryCosmosSerializer.Options);
                 if (purge != null && existing?.UserId != purge.Value.UserId) continue;
+                if (message.Origin == "export" && message.ThreadId == null && existing?.ThreadId != null)
+                {
+                    // Desktop exports can omit topic metadata retained by live or rolling capture.
+                    message.ThreadId = existing.ThreadId;
+                    message.Normalize();
+                }
                 if (existing != null && !Supersedes(message, existing)) continue;
                 if (existing != null && (existing.Date != message.Date || existing.ThreadId != message.ThreadId))
                     throw new InvalidOperationException("History source timestamp or topic changed.");

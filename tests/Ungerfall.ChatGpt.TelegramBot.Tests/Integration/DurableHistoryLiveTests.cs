@@ -67,7 +67,9 @@ public class DurableHistoryLiveTests
                 Text = index == 1 ? new string('x', 10000)
                     : index == 16 ? "Unrelated archive fixture" : "Synthetic original message",
                 Consented = true,
-                Origin = "live",
+                Origin = index == 16 ? "legacy" : "live",
+                ThreadId = index == 16 ? 7 : null,
+                Forwarded = index == 16,
                 UpdateId = index,
             }).ToArray();
             Assert.Equal(16, await repository.SaveBatch(records, timeout.Token));
@@ -75,6 +77,31 @@ public class DurableHistoryLiveTests
             var activity = await repository.Query<HistoryActivity>(-1,
                 new QueryDefinition("SELECT * FROM c WHERE c.kind = 'activity'"), 10, timeout.Token);
             Assert.Equal(16, Assert.Single(activity).Messages);
+            var legacy = records[15];
+            var priorWork = (await repository.GetWork(-1, legacy.Bucket, timeout.Token))!;
+            HistoryMessage Export(int? topic = null, bool changedDate = false) => new()
+            {
+                ChatId = -1, SourceChatId = -1, MessageId = legacy.MessageId, UserId = 42, User = "Synthetic",
+                Date = changedDate ? legacy.Date.AddSeconds(1) : legacy.Date,
+                EditedAtUtc = legacy.Date.AddMinutes(1), Text = legacy.Text, Origin = "export",
+                ThreadId = topic, Consented = true,
+            };
+            Assert.True(await repository.SaveMessage(Export(), timeout.Token));
+            var promoted = (await repository.GetMessage(-1, legacy.Id, timeout.Token))!;
+            Assert.Equal(7, promoted.ThreadId);
+            Assert.Equal(legacy.Bucket, promoted.Bucket);
+            Assert.Equal("export", promoted.Origin);
+            Assert.False(promoted.Forwarded);
+            Assert.Equal(priorWork.Version + 1, (await repository.GetWork(-1, legacy.Bucket, timeout.Token))!.Version);
+            Assert.False(await repository.SaveMessage(Export(), timeout.Token));
+            var conflictingTopic = Export(8);
+            conflictingTopic.EditedAtUtc = legacy.Date.AddMinutes(2);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => repository.SaveMessage(conflictingTopic, timeout.Token));
+            var conflictingDate = Export(changedDate: true);
+            conflictingDate.EditedAtUtc = legacy.Date.AddMinutes(2);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => repository.SaveMessage(conflictingDate, timeout.Token));
+            Assert.Equal(16, Assert.Single(await repository.Query<HistoryActivity>(-1,
+                new QueryDefinition("SELECT * FROM c WHERE c.kind = 'activity'"), 10, timeout.Token)).Messages);
             var original = (await repository.GetMessage(-1, records[0].Id, timeout.Token))!;
             Assert.Equal(new string('x', 10000), original.Text);
             Assert.Null(await repository.GetMessage(-2, original.Id, timeout.Token));
