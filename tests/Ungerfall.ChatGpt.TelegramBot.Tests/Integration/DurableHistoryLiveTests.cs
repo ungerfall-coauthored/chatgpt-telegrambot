@@ -16,7 +16,7 @@ public class DurableHistoryLiveTests
     {
         Skip.IfNot(Environment.GetEnvironmentVariable("DURABLE_HISTORY_LIVE_TEST") == "1",
             "Durable history live tests are not enabled.");
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         using var client = new CosmosClient(Environment.GetEnvironmentVariable("CosmosDbConnectionString"),
             new CosmosClientOptions { Serializer = new HistoryCosmosSerializer(), ConnectionMode = ConnectionMode.Gateway });
         var database = client.GetDatabase(Environment.GetEnvironmentVariable("CosmosDatabase"));
@@ -64,7 +64,8 @@ public class DurableHistoryLiveTests
                 UserId = 42,
                 User = "Synthetic",
                 Date = new DateTime(2024, 1, 1, 0, 0, index, DateTimeKind.Utc),
-                Text = index == 1 ? new string('x', 10000) : "Synthetic original message",
+                Text = index == 1 ? new string('x', 10000)
+                    : index == 16 ? "Unrelated archive fixture" : "Synthetic original message",
                 Consented = true,
                 Origin = "live",
                 UpdateId = index,
@@ -217,16 +218,71 @@ public class DurableHistoryLiveTests
             Assert.Equal("ok", search.Status);
             Assert.Contains("green telescope", search.ToJson());
             var settings = Ungerfall.ChatGpt.TelegramBot.Configuration.AzureOpenAiSettings.FromEnvironment();
-            var ai = settings.CreateChatCompletionClient(settings.ChatDeployment, historyTools: tools);
+            using var observation = new ToolCallObservationHandler();
+            using var http = new HttpClient(observation);
+            var ai = settings.CreateChatCompletionClient(settings.ChatDeployment, http, historyTools: tools);
+            const string histogramQuestion = "Draw a yearly ASCII activity histogram for Telegram user 42 for every available year. Include each exact count.";
             var histogramRequest = settings.Chat.CreateRequest(
                 new[] { ChatMessage.FromSystem("Use exact history tools; do not guess counts."),
-                    ChatMessage.FromUser("Use history_activity for Telegram user 42. Draw a yearly ASCII activity histogram for every available year. Include each exact count.") },
-                settings.ChatDeployment) with { StorageContext = reader };
+                    ChatMessage.FromUser(histogramQuestion) },
+                settings.ChatDeployment) with { StorageContext = reader with { CurrentRequest = histogramQuestion } };
             var histogram = await ai.CompleteAsync(histogramRequest, timeout.Token);
+            var activityCall = Assert.Single(observation.Calls, call => call.Name == "history_activity");
+            Assert.Equal(42, activityCall.Arguments.GetProperty("userId").GetInt64());
+            Assert.Equal(new[] { "userId" }, activityCall.Arguments.EnumerateObject().Select(property => property.Name));
+            Assert.True(observation.ToolResultRequests > 0, "The model must receive the actual tool result before answering.");
             Assert.True(histogram.Successful, $"Actual history tool conversation did not finish: {histogram.ErrorType}.");
             Assert.Contains("2024", histogram.Content);
             Assert.Contains("2025", histogram.Content);
             Assert.Contains("15", histogram.Content);
+            observation.Reset();
+            const string searchQuestion = "What color telescope is currently stored at the observatory? Search the archived discussion for the answer.";
+            var searchRequest = settings.Chat.CreateRequest(
+                new[] { ChatMessage.FromSystem("Answer using relevant archived originals, not guesses."),
+                    ChatMessage.FromUser(searchQuestion) }, settings.ChatDeployment)
+                with { StorageContext = reader with { CurrentRequest = searchQuestion } };
+            var searched = await ai.CompleteAsync(searchRequest, timeout.Token);
+            Assert.Contains(observation.Calls, call => call.Name == "history_search"
+                && call.Arguments.GetProperty("query").GetString()!.Contains("telescope", StringComparison.OrdinalIgnoreCase));
+            Assert.True(observation.ToolResultRequests > 0);
+            Assert.True(searched.Successful, $"Actual semantic tool conversation failed: {searched.ErrorType}.");
+            Assert.Contains("green", searched.Content, StringComparison.OrdinalIgnoreCase);
+            observation.Reset();
+            const string countQuestion = "How many original messages did Telegram user 42 send in 2024 containing the exact phrase 'Synthetic original message'? Count the full matching set, not search results.";
+            var countRequest = settings.Chat.CreateRequest(
+                new[] { ChatMessage.FromSystem("Use complete archive counts, never a retrieval sample. For one exact count use select VALUE COUNT(1), with groupBy, orderBy, and cursor null."),
+                    ChatMessage.FromUser(countQuestion) }, settings.ChatDeployment)
+                with { StorageContext = reader with { CurrentRequest = countQuestion } };
+            var exactCount = await ai.CompleteAsync(countRequest, timeout.Token);
+            var countCall = Assert.Single(observation.Calls, call => call.Name == "history_query");
+            Assert.True(HistoryQuery.Create(countCall.Arguments, new long[] { 42 }, null).Aggregate);
+            Assert.Equal("VALUE COUNT(1)", countCall.Arguments.GetProperty("select").GetString());
+            Assert.Null(countCall.Arguments.GetProperty("groupBy").GetString());
+            Assert.Null(countCall.Arguments.GetProperty("orderBy").GetString());
+            Assert.Null(countCall.Arguments.GetProperty("cursor").GetString());
+            var predicate = countCall.Arguments.GetProperty("predicate").GetString()!;
+            Assert.Contains("c.userId", predicate);
+            Assert.Contains("42", predicate);
+            Assert.Contains("c.yearUtc", predicate);
+            Assert.Contains("2024", predicate);
+            Assert.Contains("CONTAINS", predicate, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Synthetic original message", predicate);
+            Assert.DoesNotContain(observation.Calls, call => call.Name == "history_search");
+            Assert.True(observation.ToolResultRequests > 0);
+            Assert.True(exactCount.Successful, $"Actual count tool conversation failed: {exactCount.ErrorType}.");
+            Assert.Contains("14", exactCount.Content);
+            foreach (var context in new Ungerfall.ChatGpt.TelegramBot.Storage.StorageContext?[] { reader with { UserId = 99 }, null })
+            {
+                observation.Reset();
+                var denied = settings.Chat.CreateRequest(
+                    new[] { ChatMessage.FromSystem("If archive access is unavailable, say so without guessing."),
+                        ChatMessage.FromUser(histogramQuestion) }, settings.ChatDeployment)
+                    with { StorageContext = context };
+                await ai.CompleteAsync(denied, timeout.Token);
+                Assert.Empty(observation.Calls);
+                Assert.All(observation.OfferedTools, offered => Assert.Empty(offered));
+                Assert.NotEmpty(observation.OfferedTools);
+            }
             var oldGeneration = await repository.GetContextGeneration(-1, 42, timeout.Token);
             Assert.True(await repository.IsContextAllowed(-1, 42, oldGeneration, timeout.Token));
             await repository.SetConsent(-1, 42, false, timeout.Token, purging: true);
