@@ -8,6 +8,7 @@ internal sealed class ToolCallObservationHandler : DelegatingHandler
 {
     public List<ObservedToolCall> Calls { get; } = new();
     public List<string[]> OfferedTools { get; } = new();
+    public List<string> ToolResults { get; } = new();
     public int ToolResultRequests { get; private set; }
 
     public ToolCallObservationHandler() : base(new HttpClientHandler()) { }
@@ -16,6 +17,7 @@ internal sealed class ToolCallObservationHandler : DelegatingHandler
     {
         Calls.Clear();
         OfferedTools.Clear();
+        ToolResults.Clear();
         ToolResultRequests = 0;
     }
 
@@ -26,9 +28,13 @@ internal sealed class ToolCallObservationHandler : DelegatingHandler
             OfferedTools.Add(body.RootElement.TryGetProperty("tools", out var tools)
                 ? tools.EnumerateArray().Select(tool => tool.GetProperty("function").GetProperty("name").GetString()!).ToArray()
                 : Array.Empty<string>());
-            if (body.RootElement.GetProperty("messages").EnumerateArray()
-                .Any(message => message.GetProperty("role").GetString() == "tool"))
+            var toolMessages = body.RootElement.GetProperty("messages").EnumerateArray()
+                .Where(message => message.GetProperty("role").GetString() == "tool").ToArray();
+            if (toolMessages.Length > 0)
+            {
                 ToolResultRequests++;
+                ToolResults.AddRange(toolMessages.Select(message => message.GetProperty("content").GetString()!));
+            }
         }
         var response = await base.SendAsync(request, cancellation);
         if (!response.IsSuccessStatusCode) return response;

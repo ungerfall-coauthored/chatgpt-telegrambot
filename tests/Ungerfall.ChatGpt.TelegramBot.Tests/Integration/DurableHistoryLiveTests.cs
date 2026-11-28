@@ -216,6 +216,22 @@ public class DurableHistoryLiveTests
             Assert.Equal("ok", counted.Status);
             using (var result = System.Text.Json.JsonDocument.Parse(counted.ToJson()))
                 Assert.Equal(16, result.RootElement.GetProperty("data").GetProperty("rows")[0].GetInt32());
+            var datedCount = await tools.Execute("history_query",
+                """{"select":"VALUE COUNT(1)","predicate":"c.userId = 42 AND c.date >= '2024-01-01' AND c.date < '2025-01-01' AND CONTAINS(c.text, 'Synthetic original message')","groupBy":null,"orderBy":null,"limit":1,"cursor":null}""",
+                reader, timeout.Token);
+            Assert.Equal("ok", datedCount.Status);
+            using (var result = System.Text.Json.JsonDocument.Parse(datedCount.ToJson()))
+                Assert.Equal(14, result.RootElement.GetProperty("data").GetProperty("rows")[0].GetInt32());
+            var invalidDate = await tools.Execute("history_query",
+                """{"select":"c.text","predicate":"date >= '2024-01-01'","groupBy":null,"orderBy":null,"limit":1,"cursor":null}""",
+                reader, timeout.Token);
+            Assert.Equal("invalid_query", invalidDate.Code);
+            Assert.Contains("c.", invalidDate.Message);
+            var invalidGroup = await tools.Execute("history_query",
+                """{"select":"c.text","predicate":"","groupBy":"c.text","orderBy":null,"limit":1,"cursor":null}""",
+                reader, timeout.Token);
+            Assert.Equal("invalid_query", invalidGroup.Code);
+            Assert.Contains("null for ordinary rows", invalidGroup.Message);
             var firstPage = await tools.Execute("history_query",
                 """{"select":"c.id, c.date","predicate":"","groupBy":null,"orderBy":"c.date ASC","limit":1,"cursor":null}""",
                 reader, timeout.Token);
@@ -281,7 +297,9 @@ public class DurableHistoryLiveTests
                     ChatMessage.FromUser(countQuestion) }, settings.ChatDeployment)
                 with { StorageContext = reader with { CurrentRequest = countQuestion } };
             var exactCount = await ai.CompleteAsync(countRequest, timeout.Token);
-            var countCall = Assert.Single(observation.Calls, call => call.Name == "history_query");
+            var countCalls = observation.Calls.Where(call => call.Name == "history_query").ToArray();
+            Assert.InRange(countCalls.Length, 1, 3);
+            var countCall = countCalls[^1];
             Assert.True(HistoryQuery.Create(countCall.Arguments, new long[] { 42 }, null).Aggregate);
             Assert.Equal("VALUE COUNT(1)", countCall.Arguments.GetProperty("select").GetString());
             Assert.Null(countCall.Arguments.GetProperty("groupBy").GetString());
@@ -290,14 +308,74 @@ public class DurableHistoryLiveTests
             var predicate = countCall.Arguments.GetProperty("predicate").GetString()!;
             Assert.Contains("c.userId", predicate);
             Assert.Contains("42", predicate);
-            Assert.Contains("c.yearUtc", predicate);
-            Assert.Contains("2024", predicate);
+            Assert.True(
+                System.Text.RegularExpressions.Regex.IsMatch(predicate, @"c\.yearUtc\s*=\s*2024\b")
+                || (System.Text.RegularExpressions.Regex.IsMatch(predicate, @"c\.date\s*>=\s*'2024-01-01(?:T00:00:00(?:\.0+)?Z)?'")
+                    && System.Text.RegularExpressions.Regex.IsMatch(predicate, @"c\.date\s*<\s*'2025-01-01(?:T00:00:00(?:\.0+)?Z)?'")),
+                $"Synthetic count predicate: {predicate}");
             Assert.Contains("CONTAINS", predicate, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Synthetic original message", predicate);
             Assert.DoesNotContain(observation.Calls, call => call.Name == "history_search");
             Assert.True(observation.ToolResultRequests > 0);
+            Assert.Contains(observation.ToolResults, result =>
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(result);
+                var root = document.RootElement;
+                return root.GetProperty("status").GetString() == "ok"
+                    && root.TryGetProperty("data", out var data) && data.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && data.TryGetProperty("rows", out var rows) && rows.ValueKind == System.Text.Json.JsonValueKind.Array
+                    && rows.GetArrayLength() == 1 && rows[0].ValueKind == System.Text.Json.JsonValueKind.Number
+                    && rows[0].GetInt32() == 14;
+            });
             Assert.True(exactCount.Successful, $"Actual count tool conversation failed: {exactCount.ErrorType}.");
-            Assert.Contains("14", exactCount.Content);
+            Assert.True(exactCount.Content!.Contains("14", StringComparison.Ordinal)
+                || exactCount.Content.Contains("fourteen", StringComparison.OrdinalIgnoreCase),
+                $"Synthetic count predicate: {predicate}; answer: {exactCount.Content}");
+            await repository.EnsureImportConsent(-1, 43, timeout.Token);
+            Assert.Equal(2, await repository.SaveBatch(new[]
+            {
+                new HistoryMessage { ChatId = -1, SourceChatId = -1, MessageId = 2101, UserId = 42,
+                    User = "Алиса", Date = new DateTime(2022, 2, 25, 0, 0, 0, DateTimeKind.Utc),
+                    Text = "Привет! Как здорово! Ура! fixture-alpha", Consented = true },
+                new HistoryMessage { ChatId = -1, SourceChatId = -1, MessageId = 2102, UserId = 43,
+                    User = "Борис", Date = new DateTime(2022, 2, 26, 0, 0, 0, DateTimeKind.Utc),
+                    Text = "Считаю, что следует рассмотреть возможные варианты. fixture-beta", Consented = true },
+            }, timeout.Token));
+            observation.Reset();
+            const string portraitQuestion = "Напиши речевой портрет каждого участника чата в конце февраля 2022 года.";
+            var portraitRequest = settings.Chat.CreateRequest(
+                new[] { ChatMessage.FromSystem("Ты полезный ассистент в групповом чате."),
+                    ChatMessage.FromUser(portraitQuestion) }, settings.ChatDeployment)
+                with { StorageContext = reader with { CurrentRequest = portraitQuestion } };
+            var portrait = await ai.CompleteAsync(portraitRequest, timeout.Token);
+            Assert.Contains(observation.Calls, call =>
+                call.Name == "history_query"
+                && (call.Arguments.GetProperty("select").GetString() == "*"
+                    || call.Arguments.GetProperty("select").GetString()!.Contains("c.text", StringComparison.Ordinal))
+                && call.Arguments.GetProperty("predicate").GetString()!.Contains("c.date", StringComparison.Ordinal)
+                && call.Arguments.GetProperty("predicate").GetString()!.Contains("2022-02", StringComparison.Ordinal));
+            Assert.True(observation.ToolResultRequests > 0);
+            Assert.True(observation.ToolResults.Any(result =>
+                result.Contains("fixture-alpha", StringComparison.Ordinal) && result.Contains("fixture-beta", StringComparison.Ordinal)),
+                $"Synthetic portrait queries: {string.Join("; ", observation.Calls.Select(call => call.Arguments))}");
+            Assert.True(portrait.Successful, $"Actual speech-style conversation failed: {portrait.ErrorType}.");
+            Assert.Contains("Алиса", portrait.Content, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Борис", portrait.Content, StringComparison.OrdinalIgnoreCase);
+            observation.Reset();
+            const string discussionQuestion = "Что обсуждали участники чата в конце февраля 2022 года?";
+            var discussionRequest = settings.Chat.CreateRequest(
+                new[] { ChatMessage.FromSystem("Ты полезный ассистент в групповом чате."),
+                    ChatMessage.FromUser(discussionQuestion) }, settings.ChatDeployment)
+                with { StorageContext = reader with { CurrentRequest = discussionQuestion } };
+            var discussion = await ai.CompleteAsync(discussionRequest, timeout.Token);
+            Assert.Contains(observation.Calls, call => call.Name == "history_query"
+                && call.Arguments.GetProperty("predicate").GetString()!.Contains("c.date", StringComparison.Ordinal)
+                && call.Arguments.GetProperty("predicate").GetString()!.Contains("2022-02", StringComparison.Ordinal));
+            Assert.True(observation.ToolResultRequests > 0);
+            Assert.True(observation.ToolResults.Any(result =>
+                result.Contains("fixture-alpha", StringComparison.Ordinal) && result.Contains("fixture-beta", StringComparison.Ordinal)),
+                $"Synthetic discussion queries: {string.Join("; ", observation.Calls.Select(call => call.Arguments))}");
+            Assert.True(discussion.Successful, $"Actual dated-history conversation failed: {discussion.ErrorType}.");
             foreach (var context in new Ungerfall.ChatGpt.TelegramBot.Storage.StorageContext?[] { reader with { UserId = 99 }, null })
             {
                 observation.Reset();
