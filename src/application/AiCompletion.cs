@@ -120,11 +120,11 @@ public sealed class OpenAiChatCompletionClient(ChatClient client, StorageTools? 
                 + "For any question about this chat's past discussion, messages or participants, including a historical date or period, call an appropriate history tool before responding. "
                 + "Do not ask for consent again or claim archive evidence is unavailable without first checking. This does not apply to general knowledge questions unrelated to this chat. "
                 + "For a dated question requiring message content, use history_query to retrieve c.userId, c.user, c.date and c.text in that date range. For relevance-based lookup without a date range, use history_search. "
-                + "Approximate periods cover multiple days; do not collapse them to a single day. "
+                + "For an approximate beginning, middle or end of a month, use respectively the first, middle or last third of that month, not just its first or last day. "
                 + "If a history query is rejected, correct the syntax and retry without adding or removing requested filters. "
                 + "Ground conclusions in returned messages; do not infer sensitive traits or speculate beyond the evidence. "
                 + "Do not infer consent for anyone absent from tool results; never claim all participants or all messages were covered when results are paginated or limited. "
-                + "Explain limited samples or unavailable data honestly; do not invent portraits. "
+                + "In each historical answer explicitly state that evidence is limited to available consenting authors' messages and archive coverage may be incomplete. Explain unavailable data honestly; do not invent portraits. "
                 + "Get coverage when completeness matters; distinguish source import, pending indexing, and Telegram delivery gaps. "
                 + $"The current requesting Telegram user ID is {context.UserId}; use that for 'me'. "
                 + "Never claim a complete archive or invent links for negative exported IDs. History budget: three calls and 4000 retrieved tokens per turn."));

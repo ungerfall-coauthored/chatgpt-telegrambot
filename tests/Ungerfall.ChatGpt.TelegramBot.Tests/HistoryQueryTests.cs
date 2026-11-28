@@ -5,6 +5,17 @@ namespace Ungerfall.ChatGpt.TelegramBot.Tests;
 
 public class HistoryQueryTests
 {
+    [Fact]
+    public void QueryRepairFeedbackNeverEchoesExceptionContents()
+    {
+        var feedback = typeof(HistoryTools).GetMethod("QueryFeedback",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var known = (string?)feedback.Invoke(null, new object[] { "Unknown predicate field or operator." });
+        Assert.Equal("Unknown predicate field or operator. Prefix permitted fields with c.; use the documented operators.", known);
+        Assert.Null(feedback.Invoke(null, new object[] { "Unknown predicate field or operator. synthetic-private-content" }));
+        Assert.Null(feedback.Invoke(null, new object[] { "synthetic-private-content SELECT c.text Cosmos diagnostic" }));
+    }
+
     [Theory]
     [InlineData("c.chatId = -2")]
     [InlineData("c.userId = 42) OR true --")]
