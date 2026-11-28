@@ -13,36 +13,41 @@ public class DurableHistoryLiveTests
 {
     private const string LimitedEvidence = @"(?i)по (?:доступн|имеющ|представленн)|на основе (?:доступн|имеющ|представленн|двух)|(?:архив|данн|сообщен|участник).{0,40}(?:огранич|неполн|недостаточ|не\s+все)|(?:огранич|неполн|не\s+все|част[ьи]|только).{0,40}(?:архив|данн|сообщен|участник)|выборк[аи]";
 
-    private static bool HasLateFebruarySources(ToolCallObservationHandler observation)
+    private static bool DisclosesPeriodOrUncertainty(string answer) =>
+        System.Text.RegularExpressions.Regex.IsMatch(answer, @"(?i)приблиз|примерн|ориентировоч|неопредел[её]н|условн")
+        || (System.Text.RegularExpressions.Regex.IsMatch(answer, @"(?<!\d)(?:18|19|20|21)(?!\d)")
+            && System.Text.RegularExpressions.Regex.IsMatch(answer, @"(?i)феврал|2022-02"));
+
+    internal static bool HasLateFebruarySources(ToolCallObservationHandler observation)
     {
-        return observation.Calls.Where(call => call.Name == "history_query").Any(call =>
+        foreach (var call in observation.Calls.Where(call => call.Name == "history_query").Reverse())
         {
+            var result = observation.ToolResults.LastOrDefault(result => result.Id == call.Id);
+            if (result == null) continue;
+            using var document = System.Text.Json.JsonDocument.Parse(result.Content);
+            var root = document.RootElement;
+            if (root.GetProperty("status").GetString() != "ok"
+                || !root.TryGetProperty("data", out var data)
+                || !data.TryGetProperty("rows", out var rows)
+                || rows.ValueKind != System.Text.Json.JsonValueKind.Array) continue;
             var predicate = call.Arguments.GetProperty("predicate").GetString()!;
-            if (!System.Text.RegularExpressions.Regex.IsMatch(predicate, @"c\.date\s*>=\s*'2022-02-(?:1[8-9]|2[0-5])'")
+            if (!System.Text.RegularExpressions.Regex.IsMatch(predicate, @"c\.date\s*>=\s*'2022-02-(?:1[8-9]|2[01])'")
                 || !System.Text.RegularExpressions.Regex.IsMatch(predicate, @"c\.date\s*<\s*'2022-(?:02-2[7-9]|03-0[1-3])'")
                 || System.Text.RegularExpressions.Regex.IsMatch(predicate, @"\b(?:OR|NOT)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
                 return false;
-            return observation.ToolResults.Where(result => result.Id == call.Id).Any(result =>
-            {
-                using var document = System.Text.Json.JsonDocument.Parse(result.Content);
-                var root = document.RootElement;
-                if (root.GetProperty("status").GetString() != "ok"
-                    || !root.TryGetProperty("data", out var data)
-                    || !data.TryGetProperty("rows", out var rows)
-                    || rows.ValueKind != System.Text.Json.JsonValueKind.Array) return false;
-                var sources = rows.EnumerateArray().Where(row => row.ValueKind == System.Text.Json.JsonValueKind.Object
-                    && row.TryGetProperty("text", out _) && row.TryGetProperty("userId", out _)
-                    && row.TryGetProperty("user", out _) && row.TryGetProperty("date", out _)).ToArray();
-                return sources.Any(row => row.GetProperty("userId").GetInt64() == 42
-                        && row.GetProperty("user").GetString() == "Алиса"
-                        && row.GetProperty("date").GetString()!.StartsWith("2022-02-25", StringComparison.Ordinal)
-                        && row.GetProperty("text").GetString() == "Привет! Как здорово! Ура! fixture-alpha")
-                    && sources.Any(row => row.GetProperty("userId").GetInt64() == 43
-                        && row.GetProperty("user").GetString() == "Борис"
-                        && row.GetProperty("date").GetString()!.StartsWith("2022-02-26", StringComparison.Ordinal)
-                        && row.GetProperty("text").GetString() == "Считаю, что следует рассмотреть возможные варианты. fixture-beta");
-            });
-        });
+            var sources = rows.EnumerateArray().Where(row => row.ValueKind == System.Text.Json.JsonValueKind.Object
+                && row.TryGetProperty("text", out _) && row.TryGetProperty("userId", out _)
+                && row.TryGetProperty("user", out _) && row.TryGetProperty("date", out _)).ToArray();
+            return sources.Any(row => row.GetProperty("userId").GetInt64() == 42
+                    && row.GetProperty("user").GetString() == "Алиса"
+                    && row.GetProperty("date").GetString()!.StartsWith("2022-02-25", StringComparison.Ordinal)
+                    && row.GetProperty("text").GetString() == "Привет! Как здорово! Ура! Пойдём гулять в парк. fixture-alpha")
+                && sources.Any(row => row.GetProperty("userId").GetInt64() == 43
+                    && row.GetProperty("user").GetString() == "Борис"
+                    && row.GetProperty("date").GetString()!.StartsWith("2022-02-26", StringComparison.Ordinal)
+                    && row.GetProperty("text").GetString() == "Считаю, что следует рассмотреть прогулку в парке. fixture-beta");
+        }
+        return false;
     }
 
     [SkippableFact]
@@ -303,7 +308,9 @@ public class DurableHistoryLiveTests
             var settings = Ungerfall.ChatGpt.TelegramBot.Configuration.AzureOpenAiSettings.FromEnvironment();
             using var observation = new ToolCallObservationHandler();
             using var http = new HttpClient(observation);
-            var ai = settings.CreateChatCompletionClient(settings.ChatDeployment, http, historyTools: tools);
+            var quizStorage = Substitute.For<Ungerfall.ChatGpt.TelegramBot.Storage.IQuizStorage>();
+            var ai = settings.CreateChatCompletionClient(settings.ChatDeployment, http,
+                storageTools: new Ungerfall.ChatGpt.TelegramBot.Storage.StorageTools(quizStorage), historyTools: tools);
             const string histogramQuestion = "Draw a yearly ASCII activity histogram for Telegram user 42 for every available year. Include each exact count.";
             var histogramRequest = settings.Chat.CreateRequest(
                 new[] { ChatMessage.FromSystem("Use exact history tools; do not guess counts."),
@@ -389,14 +396,18 @@ public class DurableHistoryLiveTests
             using (var result = System.Text.Json.JsonDocument.Parse(boundaries.ToJson()))
                 Assert.Equal(2, result.RootElement.GetProperty("data").GetProperty("rows")[0].GetInt32());
             await repository.EnsureImportConsent(-1, 43, timeout.Token);
-            Assert.Equal(2, await repository.SaveBatch(new[]
+            await repository.EnsureImportConsent(-1, 44, timeout.Token);
+            Assert.Equal(3, await repository.SaveBatch(new[]
             {
                 new HistoryMessage { ChatId = -1, SourceChatId = -1, MessageId = 2101, UserId = 42,
                     User = "Алиса", Date = new DateTime(2022, 2, 25, 0, 0, 0, DateTimeKind.Utc),
-                    Text = "Привет! Как здорово! Ура! fixture-alpha", Consented = true },
+                    Text = "Привет! Как здорово! Ура! Пойдём гулять в парк. fixture-alpha", Consented = true },
                 new HistoryMessage { ChatId = -1, SourceChatId = -1, MessageId = 2102, UserId = 43,
                     User = "Борис", Date = new DateTime(2022, 2, 26, 0, 0, 0, DateTimeKind.Utc),
-                    Text = "Считаю, что следует рассмотреть возможные варианты. fixture-beta", Consented = true },
+                    Text = "Считаю, что следует рассмотреть прогулку в парке. fixture-beta", Consented = true },
+                new HistoryMessage { ChatId = -1, SourceChatId = -1, MessageId = 2103, UserId = 44,
+                    User = "Злата", Date = new DateTime(2022, 2, 5, 0, 0, 0, DateTimeKind.Utc),
+                    Text = "Построим кактусовый дирижабль. fixture-decoy", Consented = true },
             }, timeout.Token));
             observation.Reset();
             const string portraitQuestion = "Напиши речевой портрет каждого участника чата в конце февраля 2022 года.";
@@ -407,11 +418,15 @@ public class DurableHistoryLiveTests
             var portrait = await ai.CompleteAsync(portraitRequest, timeout.Token);
             Assert.True(observation.ToolResultRequests > 0);
             Assert.True(HasLateFebruarySources(observation),
-                $"Synthetic portrait queries: {string.Join("; ", observation.Calls.Select(call => call.Arguments))}");
+                $"Synthetic portrait queries: {string.Join("; ", observation.Calls.Select(call => call.Arguments))}; answer: {portrait.Content}");
             Assert.True(portrait.Successful, $"Actual speech-style conversation failed: {portrait.ErrorType}.");
             Assert.Contains("Алиса", portrait.Content, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Борис", portrait.Content, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Злата", portrait.Content, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("дирижаб", portrait.Content, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(observation.Calls, call => call.Name.StartsWith("storage_", StringComparison.Ordinal));
             Assert.Matches(LimitedEvidence, portrait.Content);
+            Assert.True(DisclosesPeriodOrUncertainty(portrait.Content!), $"Synthetic portrait answer: {portrait.Content}");
             observation.Reset();
             const string discussionQuestion = "Что обсуждали участники чата в конце февраля 2022 года?";
             var discussionRequest = settings.Chat.CreateRequest(
@@ -421,9 +436,14 @@ public class DurableHistoryLiveTests
             var discussion = await ai.CompleteAsync(discussionRequest, timeout.Token);
             Assert.True(observation.ToolResultRequests > 0);
             Assert.True(HasLateFebruarySources(observation),
-                $"Synthetic discussion queries: {string.Join("; ", observation.Calls.Select(call => call.Arguments))}");
+                $"Synthetic discussion queries: {string.Join("; ", observation.Calls.Select(call => call.Arguments))}; answer: {discussion.Content}");
             Assert.True(discussion.Successful, $"Actual dated-history conversation failed: {discussion.ErrorType}.");
+            Assert.DoesNotContain("Злата", discussion.Content, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("дирижаб", discussion.Content, StringComparison.OrdinalIgnoreCase);
+            Assert.Matches(@"(?i)парк|прогул", discussion.Content!);
+            Assert.DoesNotContain(observation.Calls, call => call.Name.StartsWith("storage_", StringComparison.Ordinal));
             Assert.Matches(LimitedEvidence, discussion.Content!);
+            Assert.True(DisclosesPeriodOrUncertainty(discussion.Content!), $"Synthetic discussion answer: {discussion.Content}");
             foreach (var context in new Ungerfall.ChatGpt.TelegramBot.Storage.StorageContext?[] { reader with { UserId = 99 }, null })
             {
                 observation.Reset();
