@@ -145,7 +145,8 @@ rather than silently truncating the archive.
 Only user `66215515` in an opted-in chat can use `history_query`, `history_get`,
 `history_search`, `history_activity` and `history_coverage`. Topic scope is
 server-owned. History tools are not available to autonomous replies or scheduled
-summaries. Read-only SQL accepts permitted SELECT/WHERE/GROUP BY/ORDER BY clauses,
+summaries; the separately configured on-this-day task reads the archive directly.
+Read-only SQL accepts permitted SELECT/WHERE/GROUP BY/ORDER BY clauses,
 not FROM, joins, subqueries or mutations. Aggregates complete or return an error;
 row reads have signed, expiring chat/user/topic/query-bound cursors. Use
 `history_activity` for exact yearly ASCII histograms, not vector-hit counts.
@@ -159,6 +160,28 @@ identity/consent can be established. Forwarded originals remain stored; they are
 excluded from embedding/text retrieval, but consenting senders' forwarding
 activity counts as source-message activity. There is no automatic history
 retrieval for unsolicited replies.
+
+The optional `OnThisDay` task runs at 09:00 UTC (12:00 fixed UTC+03:00). It is
+disabled until `OnThisDayChatId` is set privately to one group already enabled
+in `HistoryChats`; do not set it until the group and deployment are approved.
+Before release, verify the hosted timer uses UTC (`WEBSITE_TIME_ZONE` unset or
+UTC); local settings alone do not prove the hosted timer timezone.
+For each previous year starting with the earliest available consenting original,
+it sends all consenting, non-forwarded text messages in the local calendar day
+to one model request for that year. If that day's messages exceed the bounded
+query or model input limit, the year is marked unavailable instead of silently
+sampling. Empty years say no text is available in the archive, not that nothing
+happened. The recap has a “В этот день:” heading and expandable details where
+Telegram supports rich messages; otherwise it falls back to plain text, split
+into messages when necessary.
+On February 28 in a
+non-leap year, both February 28 and 29 of leap years are included; on February
+29, non-leap years are explicitly identified. No vector index is required.
+It uses the monthly history RU budget; model usage has separate charges. Consent
+is rechecked before and after generation and immediately before delivery. A
+deterministic daily receipt is claimed before delivery; a consent change,
+ambiguous delivery or crash after the claim requires manual reconciliation
+rather than an automatic duplicate.
 
 `/historyforget` revokes the requesting author's consent and resumably purges
 their archived originals, author counters and affected vectors. Recent rolling
