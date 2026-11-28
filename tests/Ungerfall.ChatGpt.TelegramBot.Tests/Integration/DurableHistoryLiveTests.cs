@@ -424,6 +424,7 @@ public class DurableHistoryLiveTests
             Assert.Contains("Борис", portrait.Content, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("Злата", portrait.Content, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("дирижаб", portrait.Content, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotMatch(@"(?i)часто|обычно|натур[аыуе]|склонност|привыч", portrait.Content!);
             Assert.DoesNotContain(observation.Calls, call => call.Name.StartsWith("storage_", StringComparison.Ordinal));
             Assert.Matches(LimitedEvidence, portrait.Content);
             Assert.True(DisclosesPeriodOrUncertainty(portrait.Content!), $"Synthetic portrait answer: {portrait.Content}");
