@@ -4,6 +4,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Azure.Cosmos;
@@ -50,6 +51,22 @@ public sealed class HistoryTools(CosmosClient client, string database, HistoryOp
         "ORDER BY supports one permitted c.field." => "ORDER BY supports one permitted c.field with optional ASC or DESC.",
         _ => null,
     };
+
+    private static object? SampleEvidence(JsonElement[] rows, string select)
+    {
+        var fields = select.Split(',').Select(field => field.Trim()).ToArray();
+        if (select != "*" && (fields.Any(field => !Regex.IsMatch(field, @"^c\.[A-Za-z][A-Za-z0-9]*$"))
+            || !fields.Contains("c.userId", StringComparer.Ordinal) || !fields.Contains("c.text", StringComparer.Ordinal)))
+            return null;
+        var counts = rows.Where(row => row.ValueKind == JsonValueKind.Object
+                && row.TryGetProperty("userId", out var user) && user.ValueKind == JsonValueKind.Number && user.TryGetInt64(out _)
+                && row.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(text.GetString()))
+            .GroupBy(row => row.GetProperty("userId").GetInt64())
+            .Select(group => new { userId = group.Key, returnedMessages = group.Count() }).ToArray();
+        return new { scope = "Counts of returned messages with text on this page, not totals or archive coverage.",
+            byAuthor = counts };
+    }
 
     private string Sign(string payload)
     {
@@ -130,6 +147,7 @@ public sealed class HistoryTools(CosmosClient client, string database, HistoryOp
                     data = new
                     {
                         rows = page.Rows,
+                        sampleEvidence = SampleEvidence(page.Rows, args.GetProperty("select").GetString()!.Trim()),
                         cursor = page.Continuation == null ? null : Sign(JsonSerializer.Serialize(new
                         {
                             chat = context.ChatId, user = context.UserId, hash, continuation = page.Continuation,

@@ -6,6 +6,28 @@ namespace Ungerfall.ChatGpt.TelegramBot.Tests;
 public class HistoryQueryTests
 {
     [Fact]
+    public void SampleEvidenceCountsOnlyReturnedAuthorTextWithoutGuessingAliases()
+    {
+        var method = typeof(HistoryTools).GetMethod("SampleEvidence",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        using var document = JsonDocument.Parse("""
+            [{"userId":42,"text":"first"},{"userId":42,"text":"second"},
+             {"userId":43,"text":"one"},{"userId":43,"text":""},{"text":"unknown"},{"userId":44}]
+            """);
+        var rows = document.RootElement.EnumerateArray().Select(row => row.Clone()).ToArray();
+        var evidence = method.Invoke(null, new object[] { rows, "c.userId, c.text" });
+        using var result = JsonDocument.Parse(JsonSerializer.Serialize(evidence));
+        var authors = result.RootElement.GetProperty("byAuthor").EnumerateArray().ToArray();
+        Assert.Equal(2, authors.Length);
+        Assert.Equal(42, authors[0].GetProperty("userId").GetInt64());
+        Assert.Equal(2, authors[0].GetProperty("returnedMessages").GetInt32());
+        Assert.Equal(43, authors[1].GetProperty("userId").GetInt64());
+        Assert.Equal(1, authors[1].GetProperty("returnedMessages").GetInt32());
+        Assert.Null(method.Invoke(null, new object[] { rows, "c.messageId AS userId, c.text" }));
+        Assert.Null(method.Invoke(null, new object[] { rows, "c.userId" }));
+    }
+
+    [Fact]
     public void QueryRepairFeedbackNeverEchoesExceptionContents()
     {
         var feedback = typeof(HistoryTools).GetMethod("QueryFeedback",
