@@ -167,7 +167,7 @@ in `HistoryChats`; do not set it until the group and deployment are approved.
 Before release, verify the hosted timer uses UTC (`WEBSITE_TIME_ZONE` unset or
 UTC); local settings alone do not prove the hosted timer timezone.
 For each previous year starting with the earliest available consenting original,
-it sends all consenting, non-forwarded text messages in the local calendar day
+it sends all imported, consenting, non-forwarded text messages in the local calendar day
 to one model request for that year. If that day's messages exceed the bounded
 query or model input limit, the year is marked unavailable instead of silently
 sampling. Empty years say no text is available in the archive, not that nothing
@@ -178,7 +178,7 @@ On February 28 in a
 non-leap year, both February 28 and 29 of leap years are included; on February
 29, non-leap years are explicitly identified. No vector index is required.
 It uses the monthly history RU budget; model usage has separate charges. Consent
-is rechecked before and after generation and immediately before delivery. A
+is rechecked before and after generation and immediately before each delivery. A
 deterministic daily receipt is claimed before delivery; a consent change,
 ambiguous delivery or crash after the claim requires manual reconciliation
 rather than an automatic duplicate.

@@ -63,6 +63,7 @@ public class OnThisDayLiveTests
                 Record(4, 43, new DateTime(2024, 2, 28, 10, 0, 0, DateTimeKind.Utc), "PRIVATE_REVOKED_MARKER"),
                 Record(5, 42, new DateTime(2024, 2, 28, 10, 0, 0, DateTimeKind.Utc), "PRIVATE_FORWARDED_MARKER", forwarded: true),
                 Record(6, 42, new DateTime(2024, 3, 1, 0, 0, 0, DateTimeKind.Utc), "OUTSIDE_LOCAL_DAY_MARKER"),
+                Record(7, 42, new DateTime(2024, 2, 28, 10, 0, 0, DateTimeKind.Utc), "LIVE_ORIGINAL_MARKER", origin: "live"),
             }.Concat(Enumerable.Range(0, 6).Select(index =>
                 Record(10 + index, 42, new DateTime(2020, 2, 28, 11, 0, index, DateTimeKind.Utc),
                     $"The group discussed the park walk, sample {index}."))).ToArray();
@@ -134,6 +135,7 @@ public class OnThisDayLiveTests
             Assert.DoesNotContain("PRIVATE_REVOKED_MARKER", requests);
             Assert.DoesNotContain("PRIVATE_FORWARDED_MARKER", requests);
             Assert.DoesNotContain("OUTSIDE_LOCAL_DAY_MARKER", requests);
+            Assert.DoesNotContain("LIVE_ORIGINAL_MARKER", requests);
             await executions.Received(1).Create(Arg.Any<TimedTaskExecution>(), Arg.Any<CancellationToken>());
             await task.Execute();
             Assert.Single(outgoing);
@@ -198,10 +200,10 @@ public class OnThisDayLiveTests
         }
     }
 
-    private static HistoryMessage Record(int id, long author, DateTime date, string text, bool forwarded = false) => new()
+    private static HistoryMessage Record(int id, long author, DateTime date, string text, bool forwarded = false, string origin = "export") => new()
     {
         ChatId = -1, SourceChatId = -1, MessageId = id, UserId = author, User = "Synthetic",
-        Date = date, Text = text, Consented = true, Forwarded = forwarded,
+        Date = date, Text = text, Consented = true, Forwarded = forwarded, Origin = origin,
     };
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider

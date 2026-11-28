@@ -51,20 +51,32 @@ public sealed class OnThisDay(
             if (await executions.Exists(chatId, "On this day", now, timeout.Token)) return;
             var result = await ComposeWithConsent(chatId, localDate, timeout.Token);
             if (result == null) return;
+            var before = history.RequestUnits;
+            var reservation = await history.ReserveBudget(0.1m, timeout.Token)
+                ?? throw new InvalidOperationException("History reads are paused by the monthly budget.");
             try
             {
-                await executions.Create(new TimedTaskExecution
+                try
                 {
-                    Id = $"on-this-day:{localDate:yyyy-MM-dd}", ChatId = chatId,
-                    Name = "On this day", Type = "on-this-day", DateUtc = now,
-                }, timeout.Token);
+                    await executions.Create(new TimedTaskExecution
+                    {
+                        Id = $"on-this-day:{localDate:yyyy-MM-dd}", ChatId = chatId,
+                        Name = "On this day", Type = "on-this-day", DateUtc = now,
+                    }, timeout.Token);
+                }
+                catch (CosmosException error) when (error.StatusCode == System.Net.HttpStatusCode.Conflict)
+                {
+                    return;
+                }
+                await bot.SendResponse(chatId, $"В этот день:\n{result.Message}", useRich: true,
+                    cancellationToken: timeout.Token,
+                    beforeSend: cancellation => CheckConsent(chatId, result.Generations, cancellation));
             }
-            catch (CosmosException error) when (error.StatusCode == System.Net.HttpStatusCode.Conflict)
+            finally
             {
-                return;
+                using var billing = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await history.SettleBudget(reservation, HistoryRepository.RuCost(history.RequestUnits - before + 7), billing.Token);
             }
-            await CheckConsent(chatId, result.Generations, timeout.Token);
-            await bot.SendResponse(chatId, $"В этот день:\n{result.Message}", useRich: true, cancellationToken: timeout.Token);
         }
         catch (Exception error)
         {
@@ -93,7 +105,7 @@ public sealed class OnThisDay(
             await CheckConsent(chatId, generations, cancellation);
             var oldest = await history.Query<HistoryMessage>(chatId, new QueryDefinition(
                 "SELECT TOP 1 * FROM c WHERE c.kind = 'message' AND c.deleted = false AND c.consented = true "
-                + "AND c.forwarded = false AND ARRAY_CONTAINS(@authors, c.userId) ORDER BY c.date ASC")
+                + "AND c.forwarded = false AND c.origin = 'export' AND ARRAY_CONTAINS(@authors, c.userId) ORDER BY c.date ASC")
                 .WithParameter("@authors", authors), 1, cancellation);
             if (oldest.Count == 0) return null;
             var firstYear = oldest[0].Date.AddHours(3).Year;
@@ -113,7 +125,7 @@ public sealed class OnThisDay(
                 var (start, end) = period.Value;
                 var query = new QueryDefinition(
                     "SELECT c.text FROM c WHERE c.kind = 'message' AND c.deleted = false "
-                    + "AND c.consented = true AND c.forwarded = false AND ARRAY_CONTAINS(@authors, c.userId) "
+                    + "AND c.consented = true AND c.forwarded = false AND c.origin = 'export' AND ARRAY_CONTAINS(@authors, c.userId) "
                     + "AND c.date >= @start AND c.date < @end AND c.text != '' ORDER BY c.date ASC")
                     .WithParameter("@authors", authors).WithParameter("@start", start).WithParameter("@end", end);
                 var texts = new List<string>();

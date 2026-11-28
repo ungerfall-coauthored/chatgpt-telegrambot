@@ -1,3 +1,6 @@
+using Telegram.Bot;
+using Telegram.Bot.Requests;
+using Telegram.Bot.Types;
 using Ungerfall.ChatGpt.TelegramBot.TimedTasks;
 
 namespace Ungerfall.ChatGpt.TelegramBot.Tests;
@@ -21,5 +24,18 @@ public class OnThisDayTests
     public void February29HasNoEquivalentInNonLeapYears()
     {
         Assert.Null(OnThisDay.Period(new DateOnly(2024, 2, 29), 2023));
+    }
+
+    [Fact]
+    public async Task ConsentIsCheckedBeforeEverySplitMessage()
+    {
+        var bot = Substitute.For<ITelegramBotClient>();
+        bot.SendRequest<Message>(Arg.Any<SendMessageRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new Message());
+        var checks = 0;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => bot.SendResponse(-1, new string('a', 5000),
+            beforeSend: _ => ++checks == 2 ? Task.FromException(new InvalidOperationException()) : Task.CompletedTask));
+        Assert.Equal(2, checks);
+        await bot.Received(1).SendRequest<Message>(Arg.Any<SendMessageRequest>(), Arg.Any<CancellationToken>());
     }
 }
