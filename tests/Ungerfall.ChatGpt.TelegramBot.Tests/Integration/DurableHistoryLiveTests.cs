@@ -250,12 +250,16 @@ public class DurableHistoryLiveTests
             observation.Reset();
             const string countQuestion = "How many original messages did Telegram user 42 send in 2024 containing the exact phrase 'Synthetic original message'? Count the full matching set, not search results.";
             var countRequest = settings.Chat.CreateRequest(
-                new[] { ChatMessage.FromSystem("Use complete archive counts, never a retrieval sample."),
+                new[] { ChatMessage.FromSystem("Use complete archive counts, never a retrieval sample. For one exact count use select VALUE COUNT(1), with groupBy, orderBy, and cursor null."),
                     ChatMessage.FromUser(countQuestion) }, settings.ChatDeployment)
                 with { StorageContext = reader with { CurrentRequest = countQuestion } };
             var exactCount = await ai.CompleteAsync(countRequest, timeout.Token);
             var countCall = Assert.Single(observation.Calls, call => call.Name == "history_query");
             Assert.True(HistoryQuery.Create(countCall.Arguments, new long[] { 42 }, null).Aggregate);
+            Assert.Equal("VALUE COUNT(1)", countCall.Arguments.GetProperty("select").GetString());
+            Assert.Null(countCall.Arguments.GetProperty("groupBy").GetString());
+            Assert.Null(countCall.Arguments.GetProperty("orderBy").GetString());
+            Assert.Null(countCall.Arguments.GetProperty("cursor").GetString());
             var predicate = countCall.Arguments.GetProperty("predicate").GetString()!;
             Assert.Contains("c.userId", predicate);
             Assert.Contains("42", predicate);
