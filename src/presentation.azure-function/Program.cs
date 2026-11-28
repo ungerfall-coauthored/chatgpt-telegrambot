@@ -102,6 +102,8 @@ namespace Ungerfall.ChatGpt.TelegramBot.AzureFunction
                    s.AddScoped<IWhitelist, Whitelist>();
                    s.AddScoped<TooLongDidNotReadToday>();
                    s.AddScoped<DailySummary>();
+                   s.AddSingleton(_ => OnThisDayOptions.FromEnvironment());
+                   s.AddScoped<OnThisDay>();
                    s.AddScoped<DailyQuiz>();
                    s.AddScoped<DailyBookQuiz>();
                    s.AddScoped<DailyFilmsQuiz>();

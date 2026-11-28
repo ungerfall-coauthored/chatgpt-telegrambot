@@ -17,11 +17,12 @@ public static class TelegramBotClientExtensions
         bool useRich = false,
         ReplyParameters? replyParameters = default,
         int? messageThreadId = default,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Func<CancellationToken, Task>? beforeSend = null)
     {
         try
         {
-            return await SendResponseCore(botClient, chatId, text, useRich, replyParameters, messageThreadId, cancellationToken);
+            return await SendResponseCore(botClient, chatId, text, useRich, replyParameters, messageThreadId, cancellationToken, beforeSend);
         }
         catch (RequestException ex) when (ex is not ApiRequestException)
         {
@@ -36,7 +37,8 @@ public static class TelegramBotClientExtensions
         bool useRich,
         ReplyParameters? replyParameters,
         int? messageThreadId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task>? beforeSend)
     {
         ArgumentException.ThrowIfNullOrEmpty(text);
         const string detailsTitle = "Подробнее";
@@ -73,6 +75,7 @@ public static class TelegramBotClientExtensions
 
             try
             {
+                if (beforeSend != null) await beforeSend(cancellationToken);
                 return await botClient.SendRichMessage(
                     chatId: chatId,
                     richMessage: new InputRichMessage { Blocks = blocks },
@@ -105,6 +108,7 @@ public static class TelegramBotClientExtensions
             Message sent;
             try
             {
+                if (beforeSend != null) await beforeSend(cancellationToken);
                 sent = await botClient.SendMessage(
                     chatId: chatId,
                     text: text.Substring(offset, length),
